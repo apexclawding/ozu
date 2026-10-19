@@ -1,0 +1,33 @@
+# ozu-capture on the NAS: the youtube source only. Copied verbatim to
+# data/config.toml in the deploy directory (deploy/nas/README.md).
+# No secrets live here: the deploy key is mounted at /ssh (NFR-05).
+
+[bridge]
+# This box has no WHISPER and no SMB mount to watch; the voice source runs
+# on the Mac. Caption-less videos are handed to it through /voiceinbox.
+voice_enabled = false
+walled_prefixes = ["work"]
+
+[vault]
+# The ONLY remote the bridge will ever push to (FR-33). ssh, because the
+# container authenticates with a per-repo deploy key (compose.yml).
+approved_remote = "git@github.com:you/vault.git"
+branch = "main"
+topic = "voice"
+
+[youtube]
+enabled = true
+playlist_url = "https://youtube.com/playlist?list=YOUR_PLAYLIST_ID"
+poll_minutes = 30
+max_per_tick = 3
+languages = ["en", "es", "fr", "pt"]
+max_minutes = 180
+whisper_fallback = true
+# VOICE_INBOX on the host (compose.yml) — the Mac lane's inbox (FR-05)
+handoff_dir = "/voiceinbox"
+topic = "learning"
+ytdlp_cmd = ["yt-dlp"]
+extra_args = []
+timeout_seconds = 600
+# pip install --user -U yt-dlp once a day (FR-11); off on the Mac
+upgrade_daily = true

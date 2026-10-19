@@ -1,0 +1,15 @@
+[Unit]
+Description=Ozu paper-loop tick (pull -> vision -> builds)
+After=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=%h/ozu-data/.env
+WorkingDirectory=%h/ozu-data
+Environment=PYTHONPATH=%h/ozu/src
+ExecStart=%h/ozu/.venv/bin/python -m ozu.pipeline tick
+# Offsite backup of the build conversation as it happens. Leading '-' so a
+# push failure never fails the tick — the vault is committed locally by then,
+# and a no-op push when nothing changed is free.
+ExecStartPost=-/usr/bin/git -C %h/ozu-data/vault push --quiet origin main
+Nice=10

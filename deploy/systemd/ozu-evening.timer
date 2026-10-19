@@ -1,0 +1,9 @@
+[Unit]
+Description=Ozu Evening edition, every evening at 20:00 (host local time)
+
+[Timer]
+OnCalendar=*-*-* 20:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,45 @@
+# ozu-capture youtube source on the NAS. Lives in its own directory on the
+# NAS, beside a `.env` that sets PUID, PGID and VOICE_INBOX (README.md); the
+# repo tree is unpacked into ./src by README.md's ship step.
+#
+# Caps (Amendment 1 C2/NFR-06): this box already runs other services at
+# several cores' worth; a listing every 30 min and one caption fetch per
+# new video must never compete with it.
+services:
+  ozu-capture:
+    build:
+      context: ./src
+      dockerfile: deploy/nas/Dockerfile
+      args:
+        PUID: ${PUID:-1000}
+        PGID: ${PGID:-1000}
+    image: ozu-capture:youtube
+    container_name: ozu-capture
+    user: "${PUID:-1000}:${PGID:-1000}"
+    restart: unless-stopped
+    cpus: "0.5"
+    mem_limit: 512m
+    init: true
+    stop_grace_period: 30s
+    environment:
+      OZU_CAPTURE_DATA: /data
+      OZU_CAPTURE_CONFIG: /data/config.toml
+      TZ: UTC
+      # The only remote is the vault; the key can push nowhere else (FR-33 +
+      # a per-repo deploy key). Host key pinned from /ssh/known_hosts.
+      GIT_SSH_COMMAND: >-
+        ssh -i /ssh/id_ed25519 -o IdentitiesOnly=yes
+        -o UserKnownHostsFile=/ssh/known_hosts -o StrictHostKeyChecking=yes
+      GIT_AUTHOR_NAME: Your Name
+      GIT_AUTHOR_EMAIL: you@example.com
+      GIT_COMMITTER_NAME: Your Name
+      GIT_COMMITTER_EMAIL: you@example.com
+    volumes:
+      - ./data:/data
+      - ./ssh:/ssh:ro
+      - ${VOICE_INBOX:?set VOICE_INBOX to the VoiceInbox share's path}:/voiceinbox
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "3"

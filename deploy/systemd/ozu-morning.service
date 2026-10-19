@@ -1,0 +1,11 @@
+[Unit]
+Description=Ozu Morning — the morning edition to the Scribe
+After=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=%h/ozu-data/.env
+WorkingDirectory=%h/ozu-data
+Environment=PYTHONPATH=%h/ozu/src
+ExecStart=%h/ozu/.venv/bin/python -m ozu.pipeline edition morning
+Nice=10

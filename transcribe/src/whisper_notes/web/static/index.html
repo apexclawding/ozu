@@ -1,0 +1,795 @@
+<!doctype html>
+<!--
+THESIS: a quiet local instrument — one column, one accent, the drop zone is
+the hero because the drop IS the product. Refuses the dashboard-card scaffold.
+OWN-WORLD: cool neutral ground, one deep teal accent carrying action and
+progress, system sans, hairline borders, drawn 1.5px-stroke icons.
+STORY: drop a file, watch it move through named phases, leave with a .md.
+Everything stays on this machine and the page keeps saying so.
+FIRST VIEWPORT: header with wordmark + on-device health chip; large drop zone
+with waveform mark; active jobs beneath; history table below the fold.
+FORM: single-file vanilla HTML/CSS/JS per D-09; Operate mode, restrained.
+FINISH: unreviewed and undocumented is unfinished; this build ends with the
+finish review, the verdict, and DESIGN.md (proportionate: detector + batched
+screenshot round, per the P4 scope).
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>WHISPER — local transcription</title>
+<style>
+  :root {
+    --bg: #f4f6f7;
+    --surface: #ffffff;
+    --panel: #e9edef;
+    --border: #d5dbdf;
+    --border-strong: #b9c2c8;
+    --text: #1b2227;
+    --text-2: #55626b;
+    --text-3: #74828c;
+    --accent: #0d7a6e;
+    --accent-hover: #0a6459;
+    --accent-soft: #d7ece9;
+    --on-accent: #ffffff;
+    --danger: #b23527;
+    --danger-soft: #f6e3e0;
+    --ok: #0d7a6e;
+    --shadow: 0 1px 2px rgba(15, 32, 39, .05), 0 6px 20px rgba(15, 32, 39, .06);
+    --radius: 10px;
+    --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14181b;
+      --surface: #1d2327;
+      --panel: #242c31;
+      --border: #313a40;
+      --border-strong: #46525a;
+      --text: #e7eaec;
+      --text-2: #a2adb4;
+      --text-3: #7d8991;
+      --accent: #37c0af;
+      --accent-hover: #4bd2c2;
+      --accent-soft: #12322e;
+      --on-accent: #06231f;
+      --danger: #ef7c6d;
+      --danger-soft: #3a221e;
+      --ok: #37c0af;
+      --shadow: 0 1px 2px rgba(0, 0, 0, .35), 0 8px 24px rgba(0, 0, 0, .25);
+    }
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font: 15px/1.5 var(--font);
+    -webkit-font-smoothing: antialiased;
+    min-height: 100vh;
+  }
+  button { font: inherit; color: inherit; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  .wrap { max-width: 860px; margin: 0 auto; padding: 0 32px 96px; }
+
+  /* ---------- header ---------- */
+  header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 28px 0 36px;
+  }
+  .wordmark { display: flex; align-items: center; gap: 12px; }
+  .wordmark svg { display: block; color: var(--accent); }
+  .wordmark h1 {
+    font-size: 17px; font-weight: 650; letter-spacing: .06em; margin: 0;
+  }
+  .wordmark span { display: block; font-size: 13px; color: var(--text-3); letter-spacing: 0; font-weight: 400; }
+  .health {
+    display: flex; align-items: center; gap: 8px;
+    font-size: 13px; color: var(--text-2);
+    border: 1px solid var(--border); border-radius: 999px;
+    padding: 5px 12px 5px 9px; background: var(--surface);
+  }
+  .health .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); }
+  .health.bad .dot { background: var(--danger); }
+  .health code { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 11.5px; color: var(--text-2); }
+
+  /* ---------- banner ---------- */
+  .banner {
+    display: none; align-items: flex-start; gap: 10px;
+    background: var(--danger-soft); color: var(--text);
+    border: 1px solid color-mix(in srgb, var(--danger) 35%, transparent);
+    border-radius: var(--radius); padding: 12px 16px; margin-bottom: 20px;
+  }
+  .banner.show { display: flex; }
+  .banner strong { color: var(--danger); }
+
+  /* ---------- drop zone ---------- */
+  .dropzone {
+    position: relative;
+    background: var(--surface);
+    border: 1.5px dashed var(--border-strong);
+    border-radius: 14px;
+    padding: 44px 32px 36px;
+    text-align: center;
+    cursor: pointer;
+    transition: border-color .16s ease-out, background .16s ease-out;
+  }
+  .dropzone:hover { border-color: var(--accent); }
+  .dropzone.drag {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+  }
+  .dropzone .mark { color: var(--accent); margin-bottom: 14px; }
+  .dropzone h2 { margin: 0 0 6px; font-size: 17px; font-weight: 600; }
+  .dropzone h2 .browse {
+    color: var(--accent); text-decoration: underline;
+    text-underline-offset: 3px; cursor: pointer; background: none; border: 0; padding: 0;
+  }
+  .dropzone p { margin: 0; color: var(--text-3); font-size: 13px; }
+  .dropzone input[type="file"] { display: none; }
+
+  .options {
+    display: flex; align-items: center; justify-content: center; gap: 22px;
+    margin-top: 22px; padding-top: 18px; border-top: 1px solid var(--border);
+    font-size: 13px; color: var(--text-2);
+  }
+  .options label { display: flex; align-items: center; gap: 7px; cursor: pointer; }
+  .options input[type="text"] {
+    width: 52px; padding: 3px 8px; font: 13px var(--font);
+    color: var(--text); background: var(--bg);
+    border: 1px solid var(--border); border-radius: 6px;
+  }
+  .options input[type="text"]::placeholder { color: var(--text-3); }
+  .options input[type="checkbox"] { accent-color: var(--accent); }
+
+  /* ---------- model consent card ---------- */
+  .model-card {
+    display: none;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 14px; padding: 36px 40px; box-shadow: var(--shadow);
+  }
+  .model-card.show { display: block; }
+  .model-card h2 { margin: 0 0 8px; font-size: 17px; font-weight: 650; }
+  .model-card p { margin: 0 0 6px; color: var(--text-2); max-width: 56ch; }
+  .model-card .fine { font-size: 13px; color: var(--text-3); }
+  .model-card .row { display: flex; align-items: center; gap: 16px; margin-top: 20px; }
+  .model-progress { display: none; margin-top: 20px; }
+  .model-progress .meter { margin-bottom: 8px; }
+  .model-progress span { font-size: 13px; color: var(--text-2); font-variant-numeric: tabular-nums; }
+
+  /* ---------- buttons ---------- */
+  .btn {
+    display: inline-flex; align-items: center; gap: 7px;
+    border: 0; border-radius: 8px; padding: 8px 16px;
+    font-size: 15px; font-weight: 550; cursor: pointer;
+    background: var(--accent); color: var(--on-accent);
+    transition: background .16s ease-out;
+  }
+  .btn:hover { background: var(--accent-hover); }
+  .btn:disabled { opacity: .5; cursor: default; }
+  .btn.ghost {
+    background: transparent; color: var(--text-2);
+    border: 1px solid var(--border);
+  }
+  .btn.ghost:hover { color: var(--text); border-color: var(--border-strong); background: var(--panel); }
+  .icon-btn {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 30px; height: 30px; border: 0; border-radius: 7px;
+    background: transparent; color: var(--text-3); cursor: pointer;
+    transition: background .16s ease-out, color .16s ease-out;
+  }
+  .icon-btn:hover { background: var(--panel); color: var(--text); }
+  .icon-btn.danger:hover { background: var(--danger-soft); color: var(--danger); }
+
+  /* ---------- sections ---------- */
+  section h3 {
+    font-size: 11.5px; font-weight: 600; letter-spacing: .08em;
+    text-transform: uppercase; color: var(--text-3);
+    margin: 40px 0 12px;
+  }
+
+  /* ---------- job cards ---------- */
+  .job {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 16px 18px; margin-bottom: 10px;
+    box-shadow: var(--shadow);
+  }
+  .job .top { display: flex; align-items: center; gap: 12px; }
+  .job .name { font-weight: 600; overflow-wrap: anywhere; }
+  .job .phase { margin-left: auto; font-size: 13px; color: var(--text-2); white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .job .phase.err { color: var(--danger); white-space: normal; }
+  .job .timing { font-size: 13px; color: var(--text-3); white-space: nowrap; font-variant-numeric: tabular-nums; }
+
+  .meter {
+    height: 5px; border-radius: 999px; background: var(--panel);
+    margin-top: 12px; overflow: hidden;
+  }
+  .meter .fill {
+    height: 100%; border-radius: 999px; background: var(--accent);
+    width: 100%; transform: scaleX(0); transform-origin: 0 50%;
+    transition: transform .25s ease-out;
+  }
+  .meter.indeterminate .fill {
+    width: 30%; transform: none;
+    animation: slide 1.1s ease-in-out infinite;
+  }
+  @keyframes slide {
+    0% { transform: translateX(-100%); }
+    100% { transform: translateX(334%); }
+  }
+
+  .job .result { margin-top: 14px; animation: reveal .22s ease-out; }
+  @keyframes reveal {
+    from { opacity: 0; transform: translateY(4px); }
+    to { opacity: 1; transform: none; }
+  }
+  .preview {
+    background: var(--bg); border: 1px solid var(--border);
+    border-radius: 8px; padding: 12px 14px;
+    font-size: 13px; line-height: 1.55; color: var(--text-2);
+    max-height: 180px; overflow: hidden; position: relative;
+    white-space: pre-wrap; overflow-wrap: anywhere;
+  }
+  .preview::after {
+    content: ""; position: absolute; inset: auto 0 0 0; height: 44px;
+    background: linear-gradient(transparent, var(--bg));
+  }
+  .job .actions { display: flex; align-items: center; gap: 10px; margin-top: 12px; }
+  .job .meta { font-size: 13px; color: var(--text-3); margin-left: auto; font-variant-numeric: tabular-nums; }
+
+  /* ---------- history ---------- */
+  .history { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+  .history table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .history th {
+    text-align: left; font-size: 11.5px; font-weight: 600; letter-spacing: .06em;
+    text-transform: uppercase; color: var(--text-3);
+    padding: 10px 14px; border-bottom: 1px solid var(--border);
+    background: color-mix(in srgb, var(--panel) 55%, var(--surface));
+  }
+  .history td { padding: 9px 14px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+  .history tr:last-child td { border-bottom: 0; }
+  .history tbody tr { transition: background .16s ease-out; }
+  .history tbody tr:hover { background: color-mix(in srgb, var(--panel) 45%, var(--surface)); }
+  .history .file { font-weight: 550; overflow-wrap: anywhere; }
+  .history .num { font-variant-numeric: tabular-nums; color: var(--text-2); white-space: nowrap; }
+  .history .lang { text-transform: uppercase; font-size: 11.5px; letter-spacing: .05em; color: var(--text-2); }
+  .history .state-failed { color: var(--danger); font-size: 13px; }
+  .history .state-cancelled { color: var(--text-3); font-size: 13px; }
+  .history .row-actions { display: flex; gap: 4px; justify-content: flex-end; }
+  .empty {
+    padding: 36px 20px; text-align: center; color: var(--text-3); font-size: 13px;
+  }
+
+  /* ---------- toasts ---------- */
+  .toasts { position: fixed; right: 20px; bottom: 20px; display: flex; flex-direction: column; gap: 8px; z-index: 10; }
+  .toast {
+    display: flex; align-items: baseline; gap: 9px;
+    background: var(--surface); border: 1px solid var(--border);
+    box-shadow: var(--shadow); border-radius: 8px;
+    padding: 11px 15px; font-size: 13px; max-width: 380px;
+    animation: reveal .2s ease-out;
+  }
+  .toast::before {
+    content: ""; flex: none; width: 7px; height: 7px; border-radius: 50%;
+    background: var(--accent); align-self: center;
+  }
+  .toast.error::before { background: var(--danger); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="wordmark">
+      <svg width="26" height="26" viewBox="0 0 26 26" fill="none" aria-hidden="true">
+        <path d="M3 10v6M8 6v14M13 9v8M18 4v18M23 11v4" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/>
+      </svg>
+      <h1>WHISPER<span>audio → Markdown, on this Mac only</span></h1>
+    </div>
+    <div class="health" id="health" title="Server health">
+      <span class="dot"></span><span id="health-text">checking…</span>
+    </div>
+  </header>
+
+  <div class="banner" id="banner" role="alert"></div>
+
+  <div class="model-card" id="model-card">
+    <h2>One-time model download</h2>
+    <p>Transcription runs entirely on this machine, but the speech model has to be
+       fetched once from Hugging Face (<code id="model-repo"></code>, about 1.6&nbsp;GB).</p>
+    <p class="fine">This is the only network access WHISPER ever makes. After the
+       download, everything works with Wi-Fi off.</p>
+    <div class="row">
+      <button class="btn" id="model-download">Download model</button>
+      <span class="fine" id="model-note"></span>
+    </div>
+    <div class="model-progress" id="model-progress">
+      <div class="meter indeterminate"><div class="fill"></div></div>
+      <span id="model-bytes">Starting download…</span>
+    </div>
+  </div>
+
+  <div class="dropzone" id="dropzone" style="display:none">
+    <div class="mark">
+      <svg width="34" height="34" viewBox="0 0 26 26" fill="none" aria-hidden="true">
+        <path d="M3 10v6M8 6v14M13 9v8M18 4v18M23 11v4" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/>
+      </svg>
+    </div>
+    <h2>Drop an audio file, or <button class="browse" id="browse" type="button">browse</button></h2>
+    <p id="formats">m4a · mp3 · wav · and any format ffmpeg can read</p>
+    <input type="file" id="file-input" multiple>
+    <div class="options" id="options">
+      <label title="Leave empty to auto-detect among ~99 languages">
+        Language <input type="text" id="opt-language" placeholder="auto" maxlength="3" spellcheck="false">
+      </label>
+      <label title="Translate the transcript to English">
+        <input type="checkbox" id="opt-translate"> Translate to English
+      </label>
+    </div>
+  </div>
+
+  <section id="active-section" style="display:none">
+    <h3>In progress</h3>
+    <div id="active"></div>
+  </section>
+
+  <section id="history-section">
+    <h3>Transcripts</h3>
+    <div class="history">
+      <table aria-label="Completed transcriptions">
+        <thead>
+          <tr><th>When</th><th>File</th><th>Length</th><th>Lang</th><th>Words</th><th></th></tr>
+        </thead>
+        <tbody id="history-body"></tbody>
+      </table>
+      <div class="empty" id="history-empty">
+        Transcripts appear here after their first run — each one is also saved
+        to <code>data/transcripts/</code> as Markdown.
+      </div>
+    </div>
+  </section>
+</div>
+
+<div class="toasts" id="toasts" aria-live="polite"></div>
+
+<template id="icon-download">
+  <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+    <path d="M8 2v8m0 0 3-3m-3 3L5 7m-2.5 6h11" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+  </svg>
+</template>
+<template id="icon-trash">
+  <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+    <path d="M2.5 4h11M6.5 4V2.8h3V4m-6.7 0 .6 9.2h9.2l.6-9.2M6.5 7v4m3-4v4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+  </svg>
+</template>
+<template id="icon-x">
+  <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+    <path d="m4 4 8 8m0-8-8 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+  </svg>
+</template>
+
+<script>
+"use strict";
+
+/* ---------- helpers ---------- */
+const $ = (id) => document.getElementById(id);
+const el = (tag, cls, text) => {
+  const node = document.createElement(tag);
+  if (cls) node.className = cls;
+  if (text !== undefined) node.textContent = text;
+  return node;
+};
+const icon = (name) => $("icon-" + name).content.firstElementChild.cloneNode(true);
+
+const fmtDuration = (s) => {
+  if (s == null) return "—";
+  s = Math.round(s);
+  const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), sec = s % 60;
+  if (h) return `${h}h ${String(m).padStart(2, "0")}m`;
+  if (m) return `${m}m ${String(sec).padStart(2, "0")}s`;
+  return `${sec}s`;
+};
+const fmtWhen = (iso) => {
+  if (!iso) return "—";
+  const d = new Date(iso), now = new Date();
+  const time = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  return d.toDateString() === now.toDateString()
+    ? time
+    : d.toLocaleDateString([], { month: "short", day: "numeric" }) + " " + time;
+};
+const fmtBytes = (b) => b >= 1e9 ? (b / 1e9).toFixed(2) + " GB" : Math.round(b / 1e6) + " MB";
+
+const toast = (message, isError) => {
+  const t = el("div", "toast" + (isError ? " error" : ""), message);
+  $("toasts").appendChild(t);
+  setTimeout(() => t.remove(), isError ? 8000 : 4500);
+};
+
+const api = async (path, options) => {
+  const resp = await fetch(path, options);
+  if (!resp.ok) {
+    let detail = `The server answered ${resp.status}.`;
+    try { detail = (await resp.json()).detail || detail; } catch {}
+    throw new Error(detail);
+  }
+  return resp.json();
+};
+
+/* ---------- state ---------- */
+const jobs = new Map();      // job_id -> latest payload
+const active = new Set();    // job ids shown in the "In progress" area
+const watchers = new Map();  // job_id -> {source, timer}
+
+/* ---------- health ---------- */
+async function refreshHealth() {
+  const health = $("health");
+  try {
+    const h = await api("/api/health");
+    health.classList.toggle("bad", !h.ok);
+    $("health-text").innerHTML = "";
+    const label = h.ok ? "on-device · " : "ffmpeg missing · ";
+    $("health-text").append(label, Object.assign(document.createElement("code"), {
+      textContent: h.model.split("/").pop(),
+    }));
+    if (!h.ffmpeg_ok) {
+      showBanner("ffmpeg is not installed, so audio cannot be decoded. Run: brew install ffmpeg, then restart WHISPER.");
+    }
+  } catch {
+    health.classList.add("bad");
+    $("health-text").textContent = "server unreachable";
+    showBanner("The WHISPER server is not responding. Start it with ./run.sh and reload this page.");
+  }
+}
+function showBanner(message) {
+  const b = $("banner");
+  b.textContent = message;
+  b.classList.add("show");
+}
+
+/* ---------- model consent (the only network access, user-triggered) ---------- */
+async function checkModel() {
+  const m = await api("/api/model");
+  $("model-repo").textContent = m.repo;
+  if (m.cached) {
+    $("model-card").classList.remove("show");
+    $("dropzone").style.display = "";
+    return;
+  }
+  $("dropzone").style.display = "none";
+  $("model-card").classList.add("show");
+  if (m.error) { $("model-note").textContent = m.error; }
+  if (m.downloading) {
+    $("model-download").disabled = true;
+    $("model-progress").style.display = "block";
+    if (m.received_bytes != null) {
+      $("model-bytes").textContent = fmtBytes(m.received_bytes) + " received…";
+    }
+    setTimeout(checkModel, 1000);
+  } else {
+    $("model-download").disabled = false;
+    $("model-progress").style.display = "none";
+  }
+}
+$("model-download").addEventListener("click", async () => {
+  $("model-download").disabled = true;
+  $("model-note").textContent = "";
+  try {
+    await api("/api/model/prefetch", { method: "POST" });
+    $("model-progress").style.display = "block";
+    setTimeout(checkModel, 1000);
+  } catch (e) {
+    $("model-download").disabled = false;
+    toast(e.message, true);
+  }
+});
+
+/* ---------- upload ---------- */
+let allowedExtensions = null;
+async function loadConfig() {
+  try {
+    const c = await api("/api/config");
+    allowedExtensions = new Set(c.allowed_extensions);
+    $("formats").textContent = c.allowed_extensions.map(e => e.slice(1)).join(" · ");
+    if (!c.supports_translation) {
+      const checkbox = $("opt-translate");
+      checkbox.checked = false;
+      checkbox.disabled = true;
+      checkbox.closest("label").style.opacity = ".55";
+      checkbox.closest("label").title =
+        c.model.split("/").pop() + " can't translate (turbo models are " +
+        "transcription-only). Set [model] repo = \"mlx-community/whisper-medium-mlx\" " +
+        "in config.toml to enable translation.";
+    }
+  } catch { /* banner already handles a dead server */ }
+}
+
+async function submitFiles(files) {
+  for (const file of files) {
+    const dot = file.name.lastIndexOf(".");
+    const ext = dot === -1 ? "" : file.name.slice(dot).toLowerCase();
+    if (allowedExtensions && !allowedExtensions.has(ext)) {
+      toast(`"${file.name}" is not a supported audio format.`, true);
+      continue;
+    }
+    const body = new FormData();
+    body.append("file", file);
+    const language = $("opt-language").value.trim().toLowerCase();
+    if (language) body.append("language", language);
+    if ($("opt-translate").checked) body.append("translate", "true");
+    try {
+      const r = await api("/api/jobs", { method: "POST", body });
+      if (r.duplicate) {
+        toast(`"${file.name}" was already transcribed — showing the existing result.`);
+      }
+      active.add(r.job_id);
+      await refreshJob(r.job_id);
+      watch(r.job_id);
+      renderActive();
+    } catch (e) {
+      toast(`${file.name}: ${e.message}`, true);
+    }
+  }
+}
+
+const dropzone = $("dropzone");
+const fileInput = $("file-input");
+dropzone.addEventListener("click", (e) => {
+  if (e.target.closest(".options")) return;
+  fileInput.click();
+});
+dropzone.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" || e.key === " ") { e.preventDefault(); fileInput.click(); }
+});
+dropzone.tabIndex = 0;
+dropzone.setAttribute("role", "button");
+dropzone.setAttribute("aria-label", "Choose or drop an audio file to transcribe");
+fileInput.addEventListener("change", () => {
+  submitFiles([...fileInput.files]);
+  fileInput.value = "";
+});
+["dragenter", "dragover"].forEach(evt =>
+  dropzone.addEventListener(evt, (e) => { e.preventDefault(); dropzone.classList.add("drag"); }));
+["dragleave", "drop"].forEach(evt =>
+  dropzone.addEventListener(evt, (e) => { e.preventDefault(); dropzone.classList.remove("drag"); }));
+dropzone.addEventListener("drop", (e) => submitFiles([...e.dataTransfer.files]));
+
+/* ---------- job tracking: SSE with automatic polling fallback (FR-33) ---------- */
+async function refreshJob(jobId) {
+  try {
+    const payload = await api(`/api/jobs/${jobId}`);
+    jobs.set(jobId, payload);
+    return payload;
+  } catch { return null; }
+}
+
+function watch(jobId) {
+  if (watchers.has(jobId)) return;
+  const watcher = { source: null, timer: null, errors: 0 };
+  watchers.set(jobId, watcher);
+
+  const finish = () => {
+    if (watcher.source) watcher.source.close();
+    if (watcher.timer) clearInterval(watcher.timer);
+    watchers.delete(jobId);
+    loadHistory();
+  };
+  const handle = (payload) => {
+    jobs.set(jobId, payload);
+    renderActive();
+    if (["done", "failed", "cancelled"].includes(payload.status)) {
+      finish();
+      if (payload.status === "done") showResult(jobId);
+    }
+  };
+
+  const poll = () => {
+    watcher.timer = setInterval(async () => {
+      const payload = await refreshJob(jobId);
+      if (payload) handle(payload);
+    }, 2000);
+  };
+
+  try {
+    const source = new EventSource(`/api/jobs/${jobId}/events`);
+    watcher.source = source;
+    source.onmessage = (e) => { watcher.errors = 0; handle(JSON.parse(e.data)); };
+    source.onerror = () => {
+      watcher.errors += 1;
+      if (watcher.errors >= 3 && !watcher.timer) {  // fall back to polling
+        source.close(); watcher.source = null; poll();
+      }
+    };
+  } catch { poll(); }
+}
+
+async function showResult(jobId) {
+  try {
+    const p = await api(`/api/jobs/${jobId}/preview?n=700`);
+    const job = jobs.get(jobId);
+    if (job) { job.preview = p.preview; renderActive(); }
+  } catch { /* preview is a nicety; download still works */ }
+}
+
+/* ---------- rendering ---------- */
+const PHASE_LABEL = {
+  "decoding": "Decoding audio",
+  "detecting language": "Detecting language",
+  "transcribing": "Transcribing",
+  "writing": "Writing Markdown",
+};
+
+function jobPhaseText(j) {
+  if (j.status === "queued") {
+    return j.queue_position > 0 ? `Queued — position ${j.queue_position}` : "Queued";
+  }
+  if (j.status === "running") {
+    const label = PHASE_LABEL[j.phase] || "Starting";
+    if (j.phase === "transcribing" && j.percent != null) {
+      let text = `${label} ${Math.floor(j.percent)}%`;
+      if (j.eta != null && j.percent > 3) text += ` · ~${fmtDuration(j.eta)} left`;
+      return text;
+    }
+    return label;
+  }
+  if (j.status === "failed") return j.error || "Failed";
+  if (j.status === "cancelled") return "Cancelled";
+  return "Done";
+}
+
+const STATUS_ORDER = { running: 0, queued: 1, done: 2, failed: 2, cancelled: 2 };
+
+function renderActive() {
+  const container = $("active");
+  container.innerHTML = "";
+  const ids = [...active].filter(id => jobs.has(id)).sort((a, b) => {
+    const ja = jobs.get(a), jb = jobs.get(b);
+    return (STATUS_ORDER[ja.status] - STATUS_ORDER[jb.status])
+        || ((ja.queue_position ?? 0) - (jb.queue_position ?? 0));
+  });
+  $("active-section").style.display = ids.length ? "" : "none";
+  for (const id of ids) {
+    const j = jobs.get(id);
+    const card = el("div", "job");
+
+    const top = el("div", "top");
+    top.appendChild(el("span", "name", j.source_name));
+    if (j.status === "running" && j.elapsed != null) {
+      top.appendChild(el("span", "timing", fmtDuration(j.elapsed) + " elapsed"));
+    }
+    const phase = el("span", "phase" + (j.status === "failed" ? " err" : ""), jobPhaseText(j));
+    top.appendChild(phase);
+    if (["queued", "running"].includes(j.status)) {
+      const cancel = el("button", "icon-btn danger");
+      cancel.title = "Cancel this transcription";
+      cancel.setAttribute("aria-label", "Cancel " + j.source_name);
+      cancel.appendChild(icon("x"));
+      cancel.addEventListener("click", () => cancelJob(id));
+      top.appendChild(cancel);
+    } else {
+      const dismiss = el("button", "icon-btn");
+      dismiss.title = "Dismiss";
+      dismiss.setAttribute("aria-label", "Dismiss " + j.source_name);
+      dismiss.appendChild(icon("x"));
+      dismiss.addEventListener("click", () => { active.delete(id); renderActive(); loadHistory(); });
+      top.appendChild(dismiss);
+    }
+    card.appendChild(top);
+
+    if (["queued", "running"].includes(j.status)) {
+      const meter = el("div", "meter");
+      const fill = el("div", "fill");
+      meter.appendChild(fill);
+      if (j.phase === "transcribing" && j.percent != null) {
+        fill.style.transform = `scaleX(${j.percent / 100})`;
+        meter.setAttribute("role", "progressbar");
+        meter.setAttribute("aria-valuenow", Math.floor(j.percent));
+        meter.setAttribute("aria-valuemin", "0");
+        meter.setAttribute("aria-valuemax", "100");
+      } else if (j.status === "running") {
+        meter.classList.add("indeterminate");
+      }
+      // a queued job shows an empty, still track: it is waiting, not working
+      card.appendChild(meter);
+    }
+
+    if (j.status === "done") {
+      const result = el("div", "result");
+      if (j.preview) result.appendChild(el("div", "preview", j.preview));
+      const actions = el("div", "actions");
+      const download = el("a", "btn");
+      download.href = `/api/jobs/${id}/markdown`;
+      download.append(icon("download"), "Download .md");
+      actions.appendChild(download);
+      const meta = el("span", "meta",
+        `${fmtDuration(j.duration_seconds)} · ${(j.language || "?").toUpperCase()} · ${j.word_count ?? 0} words`);
+      actions.appendChild(meta);
+      result.appendChild(actions);
+      card.appendChild(result);
+    }
+    container.appendChild(card);
+  }
+}
+
+async function cancelJob(jobId) {
+  try {
+    await api(`/api/jobs/${jobId}`, { method: "DELETE" });
+  } catch (e) { toast(e.message, true); }
+}
+
+/* ---------- history (FR-36) ---------- */
+async function loadHistory() {
+  let list;
+  try { list = await api("/api/jobs"); } catch { return; }
+  const body = $("history-body");
+  body.innerHTML = "";
+  const rows = list.filter(j =>
+    ["done", "failed", "cancelled"].includes(j.status) &&
+    !(active.has(j.job_id) && j.status === "done"));
+  $("history-empty").style.display = rows.length ? "none" : "";
+  for (const j of rows) {
+    const tr = document.createElement("tr");
+    tr.appendChild(el("td", "num", fmtWhen(j.finished_at || j.created_at)));
+    tr.appendChild(el("td", "file", j.source_name));
+    if (j.status === "done") {
+      tr.appendChild(el("td", "num", fmtDuration(j.duration_seconds)));
+      tr.appendChild(el("td", "lang", j.language || "—"));
+      tr.appendChild(el("td", "num", j.word_count ?? "—"));
+    } else {
+      const note = el("td", "state-" + j.status,
+        j.status === "failed" ? (j.error || "Failed") : "Cancelled");
+      note.colSpan = 3;
+      note.title = j.error || "";
+      tr.appendChild(note);
+    }
+    const actionCell = document.createElement("td");
+    const actions = el("div", "row-actions");
+    if (j.status === "done" && j.has_markdown) {
+      const download = document.createElement("a");
+      download.className = "icon-btn";
+      download.href = `/api/jobs/${j.job_id}/markdown`;
+      download.title = "Download " + j.source_name.replace(/\.[^.]+$/, ".md");
+      download.setAttribute("aria-label", download.title);
+      download.appendChild(icon("download"));
+      actions.appendChild(download);
+    }
+    const del = el("button", "icon-btn danger");
+    del.title = "Delete this job and its files";
+    del.setAttribute("aria-label", "Delete " + j.source_name);
+    del.appendChild(icon("trash"));
+    del.addEventListener("click", async () => {
+      if (!confirm(`Delete "${j.source_name}" and its transcript? This cannot be undone.`)) return;
+      try {
+        await api(`/api/jobs/${j.job_id}`, { method: "DELETE" });
+        loadHistory();
+      } catch (e) { toast(e.message, true); }
+    });
+    actions.appendChild(del);
+    actionCell.appendChild(actions);
+    tr.appendChild(actionCell);
+    body.appendChild(tr);
+  }
+}
+
+/* ---------- boot ---------- */
+async function boot() {
+  await refreshHealth();
+  await Promise.all([loadConfig(), checkModel(), loadHistory()]);
+  // resume watching anything still active from a previous page load
+  try {
+    const list = await api("/api/jobs");
+    for (const j of list) {
+      if (["queued", "running"].includes(j.status)) {
+        jobs.set(j.job_id, j);
+        active.add(j.job_id);
+        watch(j.job_id);
+      }
+    }
+    renderActive();
+  } catch { /* handled by the banner */ }
+}
+boot();
+</script>
+</body>
+</html>

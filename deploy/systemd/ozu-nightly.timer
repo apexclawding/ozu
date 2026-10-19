@@ -1,0 +1,10 @@
+[Unit]
+Description=Run Ozu pipeline every 2 hours (Kindle round-trip)
+
+[Timer]
+OnCalendar=*-*-* 00/2:30:00
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

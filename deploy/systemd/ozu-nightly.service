@@ -1,0 +1,14 @@
+[Unit]
+Description=Ozu pipeline cycle (pull -> vision -> vault -> runs)
+After=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=%h/ozu-data/.env
+WorkingDirectory=%h/ozu-data
+ExecStart=%h/ozu/.venv/bin/python -m ozu.pipeline run
+# Offsite backup. Leading '-' so a push failure (network, expired deploy key)
+# never fails the run — the vault is already committed locally by then.
+ExecStartPost=-/usr/bin/git -C %h/ozu-data/vault push --quiet origin main
+Environment=PYTHONPATH=%h/ozu/src
+Nice=10

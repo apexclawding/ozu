@@ -1,0 +1,13 @@
+[Unit]
+Description=Ozu paper loop every 5 minutes
+
+[Timer]
+# The tick holds one flock with the nightly run; when they collide the tick
+# exits quietly and the next one lands five minutes later, so the two timers
+# can never walk the pipeline concurrently.
+OnCalendar=*:0/5
+RandomizedDelaySec=20
+Persistent=true
+
+[Install]
+WantedBy=timers.target

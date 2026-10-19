@@ -1,0 +1,14 @@
+[Unit]
+Description=Ozu MCP server (streamable-http on 127.0.0.1:8321)
+After=network-online.target
+
+[Service]
+EnvironmentFile=%h/ozu-data/.env
+WorkingDirectory=%h/ozu-data
+Environment=PYTHONPATH=%h/ozu/src
+ExecStart=%h/ozu/.venv/bin/python -m ozu.pipeline mcp --http
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target

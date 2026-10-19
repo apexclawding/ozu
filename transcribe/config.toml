@@ -1,0 +1,25 @@
+# WHISPER user settings. Every key here is optional; absent keys fall back to
+# the defaults in src/whisper_notes/config.py. The server host is not
+# configurable — it is always 127.0.0.1 (FR-30).
+
+[server]
+port = 8420
+
+[model]
+# Alternatives (§5.2): whisper-large-v3-turbo-q4 (~0.45 GB, memory escape hatch),
+# whisper-large-v3-mlx (~3.1 GB, max accuracy), whisper-medium-mlx (legacy).
+repo = "mlx-community/whisper-large-v3-turbo"
+idle_timeout_seconds = 600
+
+[output]
+timestamps = true
+summary_line = true
+paragraph_pause_seconds = 2.0
+paragraph_max_chars = 750
+
+[limits]
+max_file_gb = 2
+max_duration_hours = 6
+
+[storage]
+data_dir = "data"

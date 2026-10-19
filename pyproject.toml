@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ozu"
+version = "0.1.0"
+description = "Write on paper. Claude files it, answers it, and asks for your approval on paper."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.12"
+authors = [{ name = "Sergio dos Santos" }]
+keywords = ["handwriting", "e-ink", "kindle-scribe", "claude", "mcp", "knowledge-graph", "obsidian"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: POSIX :: Linux",
+    "Topic :: Office/Business :: News/Diary",
+]
+dependencies = [
+    "anthropic>=0.40",
+    "PyMuPDF>=1.24",
+    "mcp>=1.2",
+    "PyYAML>=6.0",
+    "numpy>=1.24",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff"]
+
+[project.scripts]
+ozu = "ozu.pipeline:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100

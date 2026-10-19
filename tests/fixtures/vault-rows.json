@@ -1,0 +1,214 @@
+{
+ "notes": [
+  {
+   "id": "20260818-call-the-roofer-about-the-north-slope",
+   "title": "Call the roofer about the north slope",
+   "topic": "house",
+   "summary": "Red-ink to-do: get a roofing quote before the insulation grant is filed."
+  },
+  {
+   "id": "20260818-app-name-shortlist",
+   "title": "App name shortlist",
+   "topic": "ideas",
+   "summary": "Black-ink shortlist of names and domains for the brewing timer, one still unnamed."
+  },
+  {
+   "id": "20260818-service-the-bike",
+   "title": "Service the bike",
+   "topic": "ideas",
+   "summary": "Red-ink to-do: take the bike in for its spring service."
+  },
+  {
+   "id": "20260818-kettle-new-design-two-timers",
+   "title": "Kettle new design: two timers side by side",
+   "topic": "kettle",
+   "summary": "Sketch of the brewing app's main screen with a mash timer and a boil timer side by side."
+  },
+  {
+   "id": "20260819-kettle-new-design-two-timers-claude",
+   "title": "Claude run: Kettle new design: two timers side by side",
+   "topic": "kettle",
+   "summary": "Claude built this on branch claude/20260818-kettle-new-design-two-timers — review before merging."
+  },
+  {
+   "id": "20260823-service-the-bike-done",
+   "title": "Service the bike (struck through)",
+   "topic": "ideas",
+   "summary": "Red-ink to-do to service the bike, crossed out on this page — apparently done."
+  },
+  {
+   "id": "20260823-heat-pump-or-pellets-research",
+   "title": "Research: Heat pump or pellets for the farmhouse",
+   "topic": "house",
+   "summary": "Overnight brief comparing running costs, grants and sequencing for the stone farmhouse."
+  },
+  {
+   "id": "20260823-heat-pump-or-pellets",
+   "title": "Heat pump or pellets for the farmhouse",
+   "topic": "house",
+   "summary": "Blue-ink question: which heating system goes in before next winter, and in what order."
+  },
+  {
+   "id": "20260823-insulation-before-heating",
+   "title": "Insulation before heating: roof first",
+   "topic": "house",
+   "summary": "Blue-ink idea: insulate the roof first so the heat pump can be sized smaller."
+  },
+  {
+   "id": "20260824-atlas-offline-maps-plan",
+   "title": "Atlas offline maps plan",
+   "topic": "atlas",
+   "summary": "Plan for downloading map tiles per trip so the planner works without signal."
+  },
+  {
+   "id": "20260824-bake-sale-signup-sheet",
+   "title": "Bake sale: print the sign-up sheet",
+   "topic": "people",
+   "summary": "Green-ink reminder to print the village bake sale sign-up sheet."
+  },
+  {
+   "id": "20260825-garden-fix-list",
+   "title": "Garden fix list",
+   "topic": "garden",
+   "summary": "List of jobs in the garden: the gate hinge, the raised bed, the water butt."
+  },
+  {
+   "id": "20260825-greenhouse-sand-the-staging",
+   "title": "Greenhouse: sand the staging",
+   "topic": "garden",
+   "summary": "Sand and oil the wooden staging in the greenhouse before the autumn."
+  },
+  {
+   "id": "20260826-bake-sale-signup-sheet-2",
+   "title": "Bake sale: print the sign-up sheet",
+   "topic": "people",
+   "summary": "Green-ink reminder, written again on a later page."
+  },
+  {
+   "id": "20260826-oil-boiler-inspection-booked",
+   "title": "Oil boiler inspection booked for October",
+   "topic": "house",
+   "summary": "Black-ink note: the contrôle visit is booked for the first week of October."
+  },
+  {
+   "id": "20260827-fold-the-answers-into-a-follow-up",
+   "title": "Fold the answers into a follow-up brief",
+   "topic": "house",
+   "summary": "Answers to the brief's three questions, written beside it, to queue a follow-up."
+  },
+  {
+   "id": "20260827-energy-bills-two-years-research",
+   "title": "Research: Energy bills: the last two years",
+   "topic": "house",
+   "summary": "Brief summarising the last two years of energy bills and what drove them."
+  },
+  {
+   "id": "20260827-app-to-track-meter-readings-research",
+   "title": "Research: Need an app to track meter readings",
+   "topic": "ideas",
+   "summary": "Brief on existing meter-reading apps and whether any export plain CSV."
+  },
+  {
+   "id": "20260827-fold-the-answers-research",
+   "title": "Research: Fold the answers into a follow-up brief",
+   "topic": "house",
+   "summary": "Follow-up brief using the three written answers."
+  },
+  {
+   "id": "20260827-energy-bills-two-years",
+   "title": "Energy bills: the last two years",
+   "topic": "house",
+   "summary": "Blue-ink question asking what drove the last two years of energy bills."
+  },
+  {
+   "id": "20260827-app-to-track-meter-readings",
+   "title": "Need an app to track meter readings",
+   "topic": "ideas",
+   "summary": "Blue-ink idea: a simple app to log the meter each month."
+  },
+  {
+   "id": "20260828-supply-rating-confirmed",
+   "title": "Supply rating confirmed: 12 kVA",
+   "topic": "house",
+   "summary": "Black-ink note: the electricity supply is rated 12 kVA, enough for a pump."
+  },
+  {
+   "id": "20260828-how-to-size-a-heat-pump",
+   "title": "How do you size a heat pump for an old house?",
+   "topic": "house",
+   "summary": "Blue-ink question about sizing a pump to a house with thick stone walls."
+  },
+  {
+   "id": "20260829-vision-for-atlas",
+   "title": "Vision for Atlas: a trip planner that remembers",
+   "topic": "atlas",
+   "summary": "Black-ink page describing the planner's core idea: trips that build on the café notes of the last one."
+  },
+  {
+   "id": "20260829-kettle-improvement",
+   "title": "Kettle improvement: a hop-addition alarm",
+   "topic": "kettle",
+   "summary": "Idea for the brewing app: an alarm for each hop addition during the boil."
+  },
+  {
+   "id": "20260829-voice-260829-091530",
+   "title": "Voice 260829 091530",
+   "topic": "ideas",
+   "summary": "Transcribed voice memo about the order of the renovation jobs."
+  },
+  {
+   "id": "20260829-flight-options-raw",
+   "title": "Flight options raw",
+   "topic": "atlas",
+   "summary": "Raw list of flight options copied from a page of notes."
+  },
+  {
+   "id": "20260830-project-board",
+   "title": "Project board",
+   "topic": "ideas",
+   "summary": "The weekly board: what is being built, what moved, what is waiting."
+  }
+ ],
+ "actions": [
+  {
+   "text": "Call the roofer about the north slope before filing the grant",
+   "title": "Call the roofer about the north slope"
+  },
+  {
+   "text": "Print the bake sale sign-up sheet",
+   "title": "Bake sale: print the sign-up sheet"
+  },
+  {
+   "text": "Fix the garden gate hinge",
+   "title": "Garden fix list"
+  },
+  {
+   "text": "Sand the greenhouse staging",
+   "title": "Greenhouse: sand the staging"
+  },
+  {
+   "text": "Print the bake sale sign-up sheet",
+   "title": "Bake sale: print the sign-up sheet"
+  },
+  {
+   "text": "Service the bike",
+   "title": "Service the bike"
+  },
+  {
+   "text": "Replace the water butt tap",
+   "title": "Garden fix list"
+  },
+  {
+   "text": "Raise the second bed by one plank",
+   "title": "Garden fix list"
+  },
+  {
+   "text": "Oil the greenhouse door",
+   "title": "Greenhouse: sand the staging"
+  },
+  {
+   "text": "Book the boiler inspection",
+   "title": "Oil boiler inspection booked for October"
+  }
+ ]
+}

@@ -1,0 +1,23 @@
+[project]
+name = "whisper-notes"
+version = "0.1.0"
+description = "Local audio-to-Markdown transcription. 100% on-device inference on Apple Silicon."
+readme = "README.md"
+license = "MIT"
+authors = [{ name = "Sergio dos Santos" }]
+requires-python = "==3.12.*"
+dependencies = [
+    "mlx-whisper==0.4.3",
+    "fastapi==0.141.1",
+    "uvicorn==0.52.4",
+    # Required by FastAPI to parse the multipart upload specified in
+    # REQUIREMENTS.md §8.1 (POST /api/jobs). Pure-Python, no transitive deps.
+    "python-multipart==0.0.21",
+]
+
+[project.scripts]
+whisper-notes = "whisper_notes.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.11,<0.12"]
+build-backend = "uv_build"

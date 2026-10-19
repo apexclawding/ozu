@@ -1,0 +1,54 @@
+# ozu-capture configuration. No secrets live here (NFR-05): git auth is the
+# osxkeychain, SMB auth is the login keychain entry created when the share
+# was first mounted with "Remember this password".
+
+[nas]
+share_url = "smb://user@nas.local/VoiceInbox"
+processed_subdir = "processed"
+# Test/dev hook: when set, this directory is used as the inbox directly and
+# mount discovery is skipped. Leave empty in production.
+inbox_override = ""
+
+[bridge]
+poll_quiesce_seconds = 60
+walled_prefixes = ["work"]
+
+[whisper]
+# Absolute paths throughout: launchd provides a minimal PATH.
+cmd = [
+  "/Users/you/.local/bin/uv", "run", "--project",
+  "/Users/you/ozu/transcribe", "whisper-notes", "transcribe",
+]
+# WHISPER reads its config.toml and ./data relative to the cwd — always
+# run it at home, or it picks up THIS repo's config.toml and refuses it.
+cwd = "/Users/you/ozu/transcribe"
+# launchd gives ticks a minimal PATH; WHISPER finds ffmpeg via PATH.
+extra_path = ["/opt/homebrew/bin"]
+timeout_seconds = 7200
+
+[vault]
+# The ONLY remote the bridge will ever push to (REQUIREMENTS §1.2, FR-33).
+approved_remote = "https://github.com/you/vault.git"
+branch = "main"
+topic = "voice"
+
+[agent]
+label = "dev.ozu.capture"
+start_interval = 120
+
+[youtube]
+# The YouTube lane feeds Ozu's Learn sheet (REQUIREMENTS.md, Amendment 1).
+# It runs in the container on the NAS (deploy/nas/), not on the Mac —
+# here it stays off; the Mac only sees its hand-offs arrive in VoiceInbox as
+# `yt-<id>.<ext>` + `yt-<id>.json` and files them as learning transcripts.
+enabled = false
+playlist_url = "https://youtube.com/playlist?list=YOUR_PLAYLIST_ID"
+poll_minutes = 30
+max_per_tick = 3
+languages = ["en", "es", "fr", "pt"]
+max_minutes = 180
+whisper_fallback = true
+handoff_dir = ""
+topic = "learning"
+ytdlp_cmd = ["yt-dlp"]
+extra_args = []

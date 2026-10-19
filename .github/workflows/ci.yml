@@ -1,0 +1,46 @@
+# Three parts, three machines. Every suite is hermetic: the vision call,
+# Whisper and yt-dlp are all faked, so no job needs a key or a model.
+name: ci
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  core:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -e ".[dev]"
+      - run: ruff check --select F src
+      - run: pytest -q
+
+  capture:
+    # Standard library only; the Mac- and NAS-specific parts are faked.
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: capture
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: python -m unittest discover -s . -p "test_*.py"
+        env:
+          PYTHONPATH: src
+
+  transcribe:
+    if: github.repository == 'apexclawding/ozu'
+    # MLX runs only on Apple Silicon, and the app refuses to start elsewhere.
+    runs-on: macos-14
+    defaults:
+      run:
+        working-directory: transcribe
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0: no major tags since v8, so pinned
+      - run: brew install ffmpeg
+      - run: uv run python -m unittest discover -s tests
