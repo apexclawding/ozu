@@ -1,4 +1,4 @@
-"""Learning briefs from pinned YouTube videos, and the evening "<brand> Learn" sheet.
+"""Learning briefs from pinned YouTube videos and sent articles, and the evening "<brand> Learn" sheet.
 
 A video the owner saves to a YouTube playlist arrives here as a transcript
 note under `topics/learning/` with frontmatter `learn: requested` — written by
@@ -25,6 +25,11 @@ reached the Scribe — so a failed send means the same items go out the next
 evening, never that they are lost. Nothing new and nothing due means no
 section, and on its own no evening edition at all.
 
+An article, a post or a PDF (`articles.py`) arrives as the same kind of source
+note — `learn: requested` under `topics/learning/` — and gets the same run under
+the same allowlist, with its own prompt: an article has figures instead of
+timestamps, and its figures are image files in the vault the run can open.
+
 Ledger and caps mirror research.py: `learn:` frontmatter is the truth, one
 run per note ever, OZU_MAX_LEARN_RUNS per cycle.
 """
@@ -42,6 +47,8 @@ from . import agent, db, vault
 log = logging.getLogger("ozu.learn")
 
 PROMPT_PATH = Path(__file__).resolve().parents[2] / "prompts" / "learn_prompt.md"
+ARTICLE_PROMPT_PATH = PROMPT_PATH.with_name("learn_article_prompt.md")
+ARTICLE_SOURCES = ("web", "file")       # articles.py's source notes
 
 # Spacing: a note first sent on day D comes back on D+2, D+7 (two days plus
 # seven) and D+30 after that — four meetings with each concept, then silence.
@@ -74,18 +81,47 @@ def _rel(path: Path, root: Path) -> str:
     return os.path.relpath(os.path.abspath(path), os.path.abspath(root))
 
 
+def _article_prompt(note, fm: dict, path: Path, vault_dir: Path) -> str:
+    kind = str(fm.get("kind") or "article")
+    what = {"post": f"a {fm.get('site') or 'social'} post", "pdf": "a PDF document",
+            "image": "an image"}.get(kind, "an article")
+    size = (f"{fm['pages']} pages" if fm.get("pages")
+            else f"{fm['words']} words" if fm.get("words") else "")
+    figures = int(fm.get("figures") or 0)
+    if figures:
+        fig_line = (f"It has {figures} figure{'s' if figures > 1 else ''} saved as images in "
+                    f"`{fm.get('assets')}/` (listed under the note's `## Figures`, and marked "
+                    f"[figure N] where they sit in the text). Open every one that the text "
+                    f"refers to or that could carry content — charts, diagrams, screenshots, "
+                    f"tables, the image of a post — before writing.")
+    else:
+        fig_line = "It has no figures."
+    partial = f" Note: {fm['partial']}." if fm.get("partial") else ""
+    return ARTICLE_PROMPT_PATH.read_text().format(
+        note_id=note["id"], title=note["title"], what=what,
+        byline=" · ".join(str(x) for x in (fm.get("site"), fm.get("author"), size) if x) or "unknown source",
+        url=fm.get("url", "") or "(sent as a file)",
+        source_path=_rel(path, vault_dir), figures=fig_line, partial=partial,
+        date=dt.date.today().isoformat(),
+    )
+
+
 def _work_note(note) -> None:
     cfg = get_config()
     path = Path(note["path"])
     fm, _ = _frontmatter_of(path)
-    prompt = PROMPT_PATH.read_text().format(
-        note_id=note["id"], title=note["title"],
-        channel=fm.get("channel", "") or "unknown channel",
-        duration=str(fm.get("duration", "")).strip('"') or "unknown length",
-        url=fm.get("url", "") or "",
-        transcript_path=_rel(path, cfg.vault_dir),
-        date=dt.date.today().isoformat(),
-    )
+    from .okf import source_kind
+    if source_kind(str(fm.get("source") or "")) in ARTICLE_SOURCES:
+        prompt = _article_prompt(note, fm, path, cfg.vault_dir)
+    else:
+        prompt = PROMPT_PATH.read_text().format(
+            note_id=note["id"], title=note["title"],
+            channel=fm.get("channel", "") or "unknown channel",
+            duration=str(fm.get("duration", "")).strip('"') or "unknown length",
+            url=fm.get("url", "") or "",
+            transcript_path=_rel(path, cfg.vault_dir),
+            date=dt.date.today().isoformat(),
+        )
     report = agent._run_claude(prompt, cfg.vault_dir,
                                allowed_tools=learn_tools(cfg.vault_dir),
                                model=cfg.run_models.get("learn") or None)

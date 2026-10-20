@@ -55,7 +55,9 @@ TYPE_BY_SOURCE = {
     "scribe": "Note",            # a handwritten page, read by the vision pass
     "voice": "Voice Memo",       # transcribed on-device by a capture bridge
     "youtube": "Transcript",     # captions of a pinned video
-    "learn": "Learning",         # brief drawn from a transcript
+    "web": "Article",            # a link read into a learning source (articles.py)
+    "file": "Document",          # a sent PDF or image, read the same way
+    "learn": "Learning",         # brief drawn from a transcript or an article
     "research": "Research",      # overnight brief from a handwritten question
     "claude": "Build Report",    # companion of a @claude work run
     "build": "Build",            # a paper-approved Build (proposal → PR)

@@ -82,7 +82,7 @@ class LintTest(unittest.TestCase):
     def test_a_brief_whose_transcript_is_gone(self):
         self.brief("20260902-wiki-learning", "20260901-wiki")
         out = self.findings()
-        self.assertTrue(any("its transcript 20260901-wiki is not in the vault" in f
+        self.assertTrue(any("its source 20260901-wiki is not in the vault" in f
                             for f in out), out)
 
     def test_same_video_pinned_twice(self):

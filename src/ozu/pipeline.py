@@ -7,7 +7,9 @@ Commands:
   process  run the Claude vision pass on the queue
   claude   run queued @claude work runs now (the legacy one-shot queue)
   research run queued @research briefs now
-  learn    run queued learning briefs (pinned YouTube transcripts) now
+  learn    run queued learning briefs (pinned videos, articles) now;
+           `learn add <url|file>` reads an article, a post or a PDF into the
+           queue; `learn probe <urls.txt>` reads each URL and writes nothing
   wiki     status | run | requeue [--all] — the concept pages compiled from
            the vault (`requeue` offers failed notes again; --all recompiles)
   edition  morning | evening | extra [YYYY-MM-DD] [--force] — build and send
@@ -170,8 +172,31 @@ def main() -> None:
         from . import research
         research.work_pending()
     elif cmd == "learn":
-        from . import learn
-        learn.work_pending()
+        sub = sys.argv[2] if len(sys.argv) > 2 else "run"
+        if sub == "add" and len(sys.argv) > 3:
+            import json
+            from . import articles
+            with hold_lock(wait=True) as held:
+                assert held
+                print(json.dumps(articles.capture(sys.argv[3]), indent=2, ensure_ascii=False))
+        elif sub == "probe" and len(sys.argv) > 3:
+            from . import articles
+            urls = [u.strip() for u in Path(sys.argv[3]).read_text().splitlines()
+                    if u.strip() and not u.startswith("#")]
+            rows = articles.probe(urls)
+            for r in rows:
+                what = (f"{r['kind']}, {r['words']} words, {r['figures']} figures"
+                        + (f", {r['pages']} pages" if r.get("pages") else "")
+                        + (f" — partial: {r['partial']}" if r.get("partial") else "")
+                        if r["ok"] else r.get("reason", "nothing readable"))
+                print(f"{'ok  ' if r['ok'] else 'FAIL'}  {r['url']}\n      {what}")
+            print(f"{sum(r['ok'] for r in rows)}/{len(rows)} readable")
+        elif sub == "run":
+            from . import learn
+            learn.work_pending()
+        else:
+            print("usage: ozu learn [run | add <url|file> | probe <urls.txt>]")
+            sys.exit(1)
     elif cmd == "wiki":
         from . import wiki
         sub = sys.argv[2] if len(sys.argv) > 2 else "status"
