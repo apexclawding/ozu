@@ -23,6 +23,7 @@ dependencies = [
     "mcp>=1.2",
     "PyYAML>=6.0",
     "numpy>=1.24",
+    "trafilatura>=2.0",       # article text (articles.py); fetching itself is the system curl
 ]
 
 [project.optional-dependencies]

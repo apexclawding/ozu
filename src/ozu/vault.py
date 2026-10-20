@@ -350,8 +350,11 @@ def write_learning_note(*, source: dict, report: str, video: dict) -> str:
     title = f"Learning: {source['title']}"
     summary = (_first_takeaway(report) or f"Learning brief from {source['title']}")[:200]
 
-    channel = str(video.get("channel") or "")
-    duration = str(video.get("duration") or "").strip('"')
+    # an article (articles.py) names its site and reading time where a video
+    # names its channel and length, so the sheet's line reads the same for both
+    channel = str(video.get("channel") or video.get("site") or video.get("author") or "")
+    duration = str(video.get("duration") or video.get("reading_time")
+                   or (f"{video['pages']} pages" if video.get("pages") else "")).strip('"')
     meta = " · ".join(x for x in (f"[[{source['id']}]]", channel, duration) if x)
     body_lines = [f"From {meta}"]
     if video.get("url"):
@@ -362,9 +365,10 @@ def write_learning_note(*, source: dict, report: str, video: dict) -> str:
 
     # provenance: the transcript note (lineage inside the bundle) and the
     # video itself (the external leaf source)
-    sources = _note_source(source, sid="transcript")
+    is_video = okf.source_kind(str(video.get("source") or "")) == "youtube" or bool(video.get("video_id"))
+    sources = _note_source(source, sid="transcript" if is_video else "article")
     if video.get("url"):
-        sources.append({"id": "video", "resource": str(video["url"]),
+        sources.append({"id": "video" if is_video else "web", "resource": str(video["url"]),
                         "title": source["title"], "author": channel or None})
     rel_path = _emit(cfg.vault_dir, path, body=body, generated_by="ozu/claude-code",
                      fields=dict(id=note_id, title=title, description=summary,

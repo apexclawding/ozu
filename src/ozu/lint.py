@@ -16,7 +16,9 @@ What it checks, per note in the folder:
 - a transcript whose brief run failed (`learn: error`) — nothing retries it;
 - a transcript marked `learn: done` with no Learning note drawn from it;
 - a Learning note whose transcript is no longer in the vault;
-- two transcripts of the same video (pinned twice, briefed twice);
+- two transcripts of the same video (pinned twice, briefed twice), or two
+  notes of the same link or file (`articles.capture` refuses that itself,
+  so one means something else wrote it);
 - a brief missing a section of `prompts/learn_prompt.md`'s shape — the
   learning sheet's due-again cue is the first Takeaway and its prompt the
   Question, so a brief without them comes back as a blank line;
@@ -27,7 +29,8 @@ What it checks, per note in the folder:
   for *as well as* a project, never instead (the prompt allows "nothing
   relates", so this is a pointer to read the brief again, not a defect);
 - a note in the folder the loop did not write: anything whose `source` is
-  not a transcript (`youtube:`) or a brief (`learn:`). The learning run
+  not a transcript (`youtube:`), an article or a sent file (`web:`, `file:`,
+  written by `articles.py`) or a brief (`learn:`). The learning run
   reads the vault and writes nothing, so one of these means
   something wrote into the vault that should not have;
 - a wikilink to a note that does not exist (`[[…]]` inside code is syntax
@@ -41,7 +44,8 @@ from . import okf
 
 FOLDER = "topics/learning"
 WIKI = Path("topics/wiki")
-LOOP_SOURCES = ("youtube", "learn")   # transcripts, and the briefs drawn from them
+LOOP_SOURCES = ("youtube", "web", "file", "learn")   # transcripts, articles, the briefs drawn from them
+SOURCE_KINDS = ("youtube", "web", "file")
 
 # The brief's shape, as learn_prompt.md asks for it — matched on the start
 # of the lower-cased heading, the way learn._sections/_first_line read it.
@@ -95,21 +99,22 @@ def lint(vault_dir: Path, folder: str = FOLDER) -> list[str]:
         if kind not in LOOP_SOURCES:
             out.append(f"{rel}: not written by the learning loop "
                        f"(source: {fm.get('source') or 'none'})")
-        if kind == "youtube":
+        if kind in SOURCE_KINDS:
             state = str(fm.get("learn") or "")
             if state == "error":
                 out.append(f"{rel}: brief run failed (learn: error) — nothing retries it")
             elif state == "done" and nid not in briefed:
                 out.append(f"{rel}: learn: done, but no Learning note is drawn from it")
-            vid = str(fm.get("video_id") or "")
+            vid = str(fm.get("video_id") or "") or (str(fm.get("source")) if kind != "youtube" else "")
             if vid and vid in by_video:
-                out.append(f"{rel}: same video ({vid}) as {by_video[vid]}")
+                what = "video" if kind == "youtube" else "link or file"
+                out.append(f"{rel}: same {what} ({vid}) as {by_video[vid]}")
             elif vid:
                 by_video[vid] = rel
         elif kind == "learn":
             src = str(fm.get("source"))[len("learn:"):]
             if src not in ids:
-                out.append(f"{rel}: its transcript {src} is not in the vault")
+                out.append(f"{rel}: its source {src} is not in the vault")
             out += _brief_findings(rel, body)
             touches = any(h.startswith("where it touches") for h in _headings(body))
             cited = okf.wikilinks(body) - {nid, src}

@@ -46,6 +46,7 @@ marks (full reference: [`CONVENTIONS.md`](CONVENTIONS.md)).
 | `@research` | a question | an overnight brief that cites your own notes |
 | `@claude` | build this | opens a **Build**: a plan comes back on paper |
 | a video saved to a playlist | learn this | a brief on the evening sheet, back again after 2, 7 and 30 days ([`capture/`](capture)) |
+| `ozu learn add <link or PDF>` | learn this | the same, for an article, a post or a document — figures included |
 
 Red is exclusive on purpose. If anything task-shaped became a task, red would
 stop meaning anything.
@@ -159,7 +160,9 @@ name, list it there too, so ink written on them still routes home.
 ozu run                  the 2-hourly cycle: pull, read, vault, research, wiki
 ozu tick                 the 5-minute paper loop: pull, read, Builds
 ozu edition morning      build and send an edition now (also evening | extra)
-ozu learn                brief the videos waiting in the vault now
+ozu learn                brief the videos and articles waiting in the vault now
+ozu learn add <url|file> read an article, an X/Threads/LinkedIn post or a PDF into the queue
+ozu learn probe <list>   can this server read these links? (reads, writes nothing)
 ozu wiki                 wiki status; `wiki run` now; `wiki requeue [--all]`
 ozu builds               list Builds; `builds split|reset|simulate`
 ozu index                rebuild the database from the Markdown, any time
@@ -181,6 +184,19 @@ vault, and neither sends your audio anywhere:
 - **Learn from YouTube.** Save a video to a playlist. A small container on
   the NAS fetches its captions, and the brief Ozu writes from them lands on
   the evening edition's Learn sheet, then comes back after 2, 7 and 30 days.
+- **Learn from what you read.** `ozu learn add <link>` does the same for a
+  blog post, a news article, a Substack, an X, Threads or LinkedIn post, or
+  a PDF. The server reads it — text through trafilatura, figures (charts,
+  diagrams, screenshots, a post's image) saved as images beside the note,
+  a PDF's figure pages rendered — and the brief run opens the figures with
+  the same read-only, vault-only permission it uses for transcripts. Figures
+  are git-ignored (`assets/learning/`), so the vault does not grow by a
+  gigabyte a year. Anything it cannot read (a paywall, a bot wall) comes
+  back on the sheet as "could not be read", not silence. Fetching is
+  guarded: public addresses only, checked at every redirect and pinned for
+  the connection, so a link can never reach a service on the server's
+  loopback. Run `ozu learn probe` on a list of links you read to see what
+  your server can reach before relying on it.
 
 ```
 ozu/
