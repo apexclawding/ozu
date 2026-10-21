@@ -89,6 +89,7 @@ deleted, never sent. See the note beside `BLOCK_ID`;
 from __future__ import annotations
 
 import datetime as dt
+import functools
 import html
 import html.parser
 import logging
@@ -493,11 +494,46 @@ class _Authors(Mapping):
 AUTHORS = _Authors()
 
 
+@functools.lru_cache(maxsize=None)
+def drawable(ch: str) -> bool:
+    """Whether the Story's fonts (Charis SIL and mupdf's fallbacks) draw `ch`:
+    typeset it once between two letters and read it back. Asked of the
+    renderer rather than of a list of Unicode ranges, because the ranges cut
+    both ways — `☐ ✓ ② ✅` sit among the emoji blocks and are drawn, `📱 💡`
+    are not. Cached: a document asks about each new character once."""
+    import io
+    from .textlayer import extract
+    buf = io.BytesIO()
+    writer = fitz.DocumentWriter(buf)
+    story = fitz.Story(f"<p>x{html.escape(ch)}x</p>", user_css=CSS)
+    dev = writer.begin_page(fitz.Rect(0, 0, 300, 100))
+    story.place(fitz.Rect(10, 10, 290, 90))
+    story.draw(dev)
+    writer.end_page()
+    writer.close()
+    doc = fitz.open("pdf", buf.getvalue())
+    try:
+        return ch in extract(doc[0])
+    finally:
+        doc.close()
+
+
+def printable(s: str) -> str:
+    """`s` without the characters no font here can draw. Emoji in a video
+    title ("Phone pricing 📱💡#shorts") reached the page as nothing, the D-12 gate
+    refused the edition, and because the Learn section is marked sent only
+    after the edition goes out, the same title refused every evening edition
+    from 2026-10-19 on. Dropping what cannot be drawn keeps the page and the
+    text layer saying the same thing, which is all D-01 asks."""
+    return "".join(c for c in s if c.isascii() or drawable(c))
+
+
 def esc(s) -> str:
     """Text into HTML. Every string from the vault or the model goes through
     here — an unescaped `&` in a URL would reach the text layer as `&amp;`
-    and break the round trip that D-01 depends on."""
-    return html.escape("" if s is None else str(s), quote=True)
+    and break the round trip that D-01 depends on. Characters no font can
+    draw are dropped first (`printable`)."""
+    return html.escape(printable("" if s is None else str(s)), quote=True)
 
 
 # Inline Markdown. Research briefs are model prose and lean on `**emphasis**`
