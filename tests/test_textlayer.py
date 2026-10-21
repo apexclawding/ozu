@@ -674,3 +674,22 @@ def test_no_cover_tint_is_red_and_every_tinted_cover_is_painted(tmp_path):
         stamp = [s for s in spans if "B-260912-0000" in s["text"]]
         assert day and all(s["color"] == ink for s in day), "type on a tint is ink"
         assert stamp and all(s["color"] == ink for s in stamp), "the id stamp too"
+
+
+def test_emoji_no_font_draws_are_dropped_not_fatal(tmp_path):
+    """2026-10-19/20: a Learn title with 📱💡 made the D-12 gate refuse the
+    whole evening edition, two nights running. What no font draws is left
+    out before typesetting; what the fonts do draw — the action marker and
+    the tick above all — is never touched."""
+    from ozu import layout
+    doc = layout.Document()
+    doc.head("Learn", "Phone pricing 📱💡#shorts")
+    doc.para("☐ Call the bank ✓ ② ✅ — café €12 中文 🚀")
+    out = doc.render(tmp_path / "emoji.pdf")
+    pdf = fitz.open(out)
+    text = "\n".join(textlayer.extract(p) for p in pdf)
+    assert "Phone pricing #shorts" in text
+    assert "📱" not in text and "🚀" not in text
+    for kept in ("☐", "✓", "②", "✅", "café", "€12", "中文"):
+        assert kept in text, kept
+    assert layout.drawable("☐") and not layout.drawable("💡")
