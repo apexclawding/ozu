@@ -146,3 +146,34 @@ def test_mail_carries_full_work_reports_and_skips_walled(env, monkeypatch):
     titles = str(data)
     assert "Needs your judgment" in str([w.get("body") for w in data["work"]])
     assert "Secret work thing" not in titles
+
+
+def test_send_logs_the_file_never_the_address(env, monkeypatch, tmp_path, caplog):
+    """The @kindle.com address is half of a delivery credential, and the
+    journal is read by anything that greps it: the log line names the
+    document only."""
+    import logging
+    import smtplib
+    from ozu import send_kindle
+    monkeypatch.setattr(env, "kindle_email", "someone_x1@kindle.com")
+    monkeypatch.setattr(env, "smtp_user", "me@example.com")
+    monkeypatch.setattr(env, "smtp_pass", "pw")
+    sent = []
+
+    class FakeSMTP:
+        def __init__(self, *a, **k): pass
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def starttls(self): pass
+        def login(self, *a): pass
+        def send_message(self, msg): sent.append(msg["To"])
+
+    monkeypatch.setattr(smtplib, "SMTP", FakeSMTP)
+    pdf = tmp_path / "Ozu Morning 2026-10-21.pdf"
+    pdf.write_bytes(b"%PDF-1.4\n")
+    with caplog.at_level(logging.INFO, logger="ozu.send_kindle"):
+        assert send_kindle.send_pdf(pdf)
+    assert sent == ["someone_x1@kindle.com"]
+    assert "Ozu Morning 2026-10-21.pdf sent to Send-to-Kindle" in caplog.text
+    assert "someone_x1" not in caplog.text
+

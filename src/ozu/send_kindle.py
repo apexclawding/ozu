@@ -40,5 +40,9 @@ def send_pdf(path: Path) -> bool:
         smtp.starttls()
         smtp.login(cfg.smtp_user, cfg.smtp_pass)
         smtp.send_message(msg)
-    log.info("digest sent to %s", cfg.kindle_email)
+    # The file, never the address: the @kindle.com address is half of a
+    # delivery credential (whoever has it and passes as an approved sender
+    # puts documents on the device), and anything that greps the journal
+    # would print it.
+    log.info("%s sent to Send-to-Kindle", path.name)
     return True
