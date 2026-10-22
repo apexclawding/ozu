@@ -12,7 +12,7 @@ dependencies = [
     "uvicorn==0.52.4",
     # Required by FastAPI to parse the multipart upload specified in
     # REQUIREMENTS.md §8.1 (POST /api/jobs). Pure-Python, no transitive deps.
-    "python-multipart==0.0.21",
+    "python-multipart==0.0.32",
 ]
 
 [project.scripts]
