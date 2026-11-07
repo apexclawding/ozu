@@ -35,7 +35,7 @@ jobs:
   transcribe:
     if: github.repository == 'apexclawding/ozu'
     # MLX runs only on Apple Silicon, and the app refuses to start elsewhere.
-    runs-on: macos-14
+    runs-on: macos-15
     defaults:
       run:
         working-directory: transcribe
