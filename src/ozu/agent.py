@@ -1,9 +1,11 @@
 """@claude work runs: headless Claude Code building a flagged idea in its repo.
 
-A handwritten @claude beside an idea arrives here as frontmatter
-`claude: requested` (set by vault.write_notes — personal vault only, so a
-walled page can never trigger a run). For each requested note whose topic has
-a repo in OZU_CLAUDE_REPOS, this module clones that repo fresh under
+This is the legacy one-shot queue, and **nothing new enters it**: a
+handwritten @claude now always queues a Build proposal (`claude:
+build-requested`, see vault.write_notes) which the owner approves on paper
+before anything is written. What is left here runs the notes that were
+already `claude: requested` when that changed. For each requested note whose
+topic has a repo in OZU_CLAUDE_REPOS, this module clones that repo fresh under
 ~/ozu-data/agent/, lets Claude Code work the idea on a `claude/<note-id>` branch,
 pushes that branch — never the default branch — and writes a companion note
 into the vault linking the diff for review.
@@ -138,16 +140,37 @@ def scoped(tools: tuple[str, ...], workdir: Path) -> list[str]:
 # clone has no node_modules. Installing them is deliberately not offered:
 # `npm install` runs arbitrary postinstall code as `ubuntu`, which is the one
 # thing this allowlist exists to prevent.
-WORK_BASH = ("git",
+# So no runner here may be one that *fetches* what it runs: `npx vitest` was
+# that same install under another name and went on 2026-11-06 (reasoning and
+# measurements in test_agent.no_runner_in_the_allowlist_fetches_what_it_runs).
+# `npm test`/`yarn test` stay — they run the clone's own script and fetch
+# nothing, so without vendored deps they are useless, not a way in.
+# `git` was one of these prefixes until 2026-10-28 and was not a git allowlist
+# at all: a prefix matches every suffix and git's options reach past the
+# subcommand, so `git diff --no-index /dev/null <path>` read any file `ubuntu`
+# can (~/ozu-data/.env included) and `git -c alias.x='!<cmd>' x` ran <cmd> — neither
+# starting with `git push`. Hence subcommands, which leaves `git -c`, `-C`,
+# `--git-dir=` and `--exec-path=` matched by no rule at all.
+WORK_BASH = ("git status", "git add", "git commit", "git log",
+             "git checkout", "git branch",
              "python -m unittest", "python3 -m unittest",
              "pytest", "python -m pytest", "python3 -m pytest",
-             ".venv/bin/pytest", "npm test", "npm run test", "npx vitest",
+             ".venv/bin/pytest", "npm test", "npm run test",
              "yarn test", "make test", "go test", "cargo test")
 
-# Deny beats allow, whatever the allowlist says. The pipeline owns pushing and
-# pushes exactly one branch; `git:*` by itself would also permit the agent to
-# run `git push origin HEAD:main`, which is the one thing it must never do.
-DENIED_TOOLS = "Bash(git push:*)"
+# Deny beats allow, whatever the allowlist says — and whatever Claude Code
+# auto-approves, which is what makes this the half that holds: a work run is
+# `acceptEdits` (invariant 8b). The pipeline owns pushing and pushes exactly
+# one branch, so `git push origin HEAD:main` is the one thing a run must never
+# do; the rest are the escapes above, belt to the allowlist's braces. `git
+# config` writes the same alias into the clone's own config, and `git diff` is
+# denied whole rather than allowed as `git diff --stat`, because `--no-index`
+# can follow any flag (`git diff --stat --no-index -p /dev/null <path>` prints
+# the file) and no prefix rule can keep it inside the clone. The run reviews
+# its work with `git status --short` and its clone-scoped `Read`.
+DENIED_TOOLS = ",".join(("Bash(git push:*)", "Bash(git -c:*)", "Bash(git -C:*)",
+                         "Bash(git --:*)", "Bash(git config:*)",
+                         "Bash(git diff:*)"))
 
 # A run that only produces text (learn, research, a Build proposal, the wiki)
 # must not be able to write at all. `acceptEdits` approves edits *and*
@@ -219,9 +242,21 @@ def _run_claude(prompt: str, workdir: Path, allowed_tools: str | None = None,
     # Ozu's own server carries `capture`, a vault write. The allowlist already
     # refuses them; this keeps them out of the toolbox of a run that reads
     # third-party text at all.
+    # --setting-sources user: the box's own ~/.claude/settings.json is loaded,
+    # <cwd>/.claude/settings{,.local}.json never. Every run's cwd is content
+    # someone else writes — a fresh clone of a mapped repo, or the vault the
+    # NAS bridge pushes into — and `-p` skips the workspace-trust dialog by
+    # design. Measured here 2026-11-02 on claude 2.1.316 with a planted
+    # <cwd>/.claude/settings.json: its `permissions.allow` did *not* widen the
+    # run (--allowedTools won, under dontAsk and acceptEdits alike), but its
+    # `hooks.SessionStart` *ran*, in both modes, before any tool call — i.e.
+    # arbitrary code as `ubuntu`, who can read ~/ozu-data/.env, reached by nothing
+    # the tool rules of invariants 8/8b can see. With the flag it did not fire.
+    # Deleting .claude/ from the clone is the wrong fix: the run commits its
+    # own branch, so a deleted tracked file would ride into the PR.
     cmd = [cfg.claude_bin, "-p", prompt, *permission_flags(writes),
            "--allowedTools", allowed_tools or work_tools(workdir),
-           "--strict-mcp-config",
+           "--strict-mcp-config", "--setting-sources", "user",
            "--output-format", "json"]
     if model:
         cmd += ["--model", model]

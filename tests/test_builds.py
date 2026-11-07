@@ -455,6 +455,69 @@ def test_drop_closes_without_executing(env, monkeypatch, sent, runs, tmp_path):
     assert "build: dropped" in (env.vault_dir / "topics" / "kettle" / f"{bid}.md").read_text()
 
 
+def test_a_directive_the_ink_does_not_say_is_withheld(
+        env, monkeypatch, sent, runs, tmp_path):
+    """A proposal PRINTS "@approved", "@input" and "@drop" in its decision box,
+    on the very page the answer is written on, and printed-vs-handwritten is
+    the first distinction a vision read collapses (invariant 5b). So a
+    directive is corroborated against the handwriting the same way a
+    completion is corroborated against the ink (D-11): no handwritten tag,
+    nothing applied, and the Build says so on paper."""
+    from ozu import builds, db
+    bid, _ = make_build(env, monkeypatch, sent, runs, tmp_path)
+    note = env.vault_dir / "topics" / "kettle" / f"{bid}.md"
+    con = db.connect(env.db_path)
+
+    # an approval the ink never wrote: the page carries ordinary marginalia
+    annotate(env, monkeypatch, bid,
+             annotation_result("approve", build_ref=bid,
+                               transcription="this plan reads about right"))
+    assert "build: proposed" in note.read_text(), "approved on the model's word"
+    assert builds.run_pending() == 0, "an uncorroborated approval executed"
+    ev = db.unreported_build_events(con)
+    assert any("no handwritten @approved" in e["line"] for e in ev)
+    # the ink is not lost silently — it comes back on paper
+    assert any("this plan reads about right" in e["line"] for e in ev)
+
+    # the same for @input: no revision is queued
+    annotate(env, monkeypatch, bid,
+             annotation_result("input", build_ref=bid,
+                               transcription="under ten lines would be nicer"),
+             rev="r1", name=f"Ozu Build {bid} r1 (1)  - Kindle.pdf")
+    assert "build_pending" not in note.read_text()
+    assert any("no handwritten @input" in e["line"]
+               for e in db.unreported_build_events(con))
+
+    # and for @drop: the Build stays open
+    annotate(env, monkeypatch, bid,
+             annotation_result("drop", build_ref=bid,
+                               transcription="not convinced by this one"),
+             rev="r1", name=f"Ozu Build {bid} r1 (2)  - Kindle.pdf")
+    assert "build: proposed" in note.read_text()
+    assert any("no handwritten @drop" in e["line"]
+               for e in db.unreported_build_events(con))
+
+    # a tag that is only in a note body does not corroborate itself: note
+    # bodies are told to open with the printed line they respond to
+    quoting = {"title": "Margin on the decision box", "slug": "margin-box",
+               "topic": "kettle", "tags": ["kettle"], "summary": "Margin.",
+               "body": "Re: @approved — build it as proposed. — which one?",
+               "related": [], "related_reason": "", "actions": [],
+               "claude_request": False, "research_request": False}
+    annotate(env, monkeypatch, bid,
+             annotation_result("approve", build_ref=bid,
+                               transcription="which one?", notes=[quoting]),
+             rev="r1", name=f"Ozu Build {bid} r1 (3)  - Kindle.pdf")
+    assert "build: proposed" in note.read_text()
+
+    # the real thing still goes through, however it was written down
+    annotate(env, monkeypatch, bid,
+             annotation_result("approve", build_ref=bid,
+                               transcription="@ Approved — go"),
+             rev="r1", name=f"Ozu Build {bid} r1 (4)  - Kindle.pdf")
+    assert "build: approved" in note.read_text()
+
+
 def test_failed_execution_is_error_and_reapprovable(
         env, monkeypatch, sent, runs, tmp_path):
     from ozu import agent, builds, db

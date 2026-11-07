@@ -2,7 +2,8 @@
 (a local bare repo stands in for GitHub).
 
 Covers: the claude_request flag flowing from vision JSON into frontmatter and
-db, the governance boundary (walled notes never queue), the repo-map filter,
+db as a Build proposal and never as a one-shot writing run, the governance
+boundary (walled notes never queue), the repo-map filter,
 the run cap, the one-run-per-note ledger surviving an index rebuild, branch
 push + companion note, and the API-key strip that keeps agent runs on the
 box's claude.ai login instead of the pipeline's API key.
@@ -64,13 +65,51 @@ def map_repo(monkeypatch, origin):
     config._config = None  # re-read env
 
 
-def test_claude_request_flows_to_frontmatter_and_db(env, monkeypatch):
-    from ozu import db
+def queue_legacy(env):
+    """Put every @claude note back on the legacy one-shot queue.
+
+    Nothing new enters that queue any more — `vault.write_notes` queues
+    `build-requested` for every @claude, so the unattended writing path
+    cannot be opened by a model answer. The tests below therefore stand in
+    for the notes that were already `claude: requested` when that changed:
+    flip the ledger line and the column derived from it, as the vault held
+    them then."""
+    from ozu import db, vault
+    con = db.connect(env.db_path)
+    rows = con.execute("SELECT id, path FROM notes "
+                       "WHERE claude='build-requested'").fetchall()
+    assert rows, "nothing was queued; the fixture no longer sets claude_request"
+    for row in rows:
+        vault.set_directive_status(Path(row["path"]), "requested")
+        con.execute("UPDATE notes SET claude='requested' WHERE id=?", (row["id"],))
+    con.commit()
+
+
+def test_claude_request_queues_a_build_not_an_unattended_run(env, monkeypatch):
+    """@claude asks for a Build proposal the owner approves on paper, and a
+    model answer must not be able to ask for anything else. MOCK_RESULT's
+    page-level build_directive is `{"kind": "none"}` — exactly the shape that
+    used to fall through to `claude: requested`, i.e. to a clone, a run with
+    writes=True and a pushed branch with no paper step."""
+    from ozu import agent, db
     process_one(env, monkeypatch, claude_result())
     note = next((env.vault_dir / "topics" / "kettle").glob("*kettle-freemium-pricing*.md"))
-    assert "claude: requested" in note.read_text()
+    assert "claude: build-requested" in note.read_text()
     con = db.connect(env.db_path)
-    assert con.execute("SELECT claude FROM notes").fetchone()["claude"] == "requested"
+    assert con.execute("SELECT claude FROM notes").fetchone()["claude"] == "build-requested"
+    assert agent.work_pending() == 0   # the one-shot queue selects only 'requested'
+    assert not env.agent_dir.exists()
+
+
+def test_a_propose_directive_queues_the_same_build(env, monkeypatch):
+    """The page-level directive no longer decides anything here: the read
+    that sets both flags lands on the same queue as the one that sets one."""
+    from ozu import db
+    r = claude_result()
+    r["build_directive"] = {"kind": "propose", "model": None}
+    process_one(env, monkeypatch, r)
+    con = db.connect(env.db_path)
+    assert con.execute("SELECT claude FROM notes").fetchone()["claude"] == "build-requested"
 
 
 def test_walled_note_never_queues_a_run(env, monkeypatch):
@@ -87,6 +126,7 @@ def test_walled_note_never_queues_a_run(env, monkeypatch):
 def test_unmapped_topic_stays_queued(env, monkeypatch):
     from ozu import agent, db
     process_one(env, monkeypatch, claude_result())
+    queue_legacy(env)
     assert agent.work_pending() == 0  # no OZU_CLAUDE_REPOS at all
     con = db.connect(env.db_path)
     assert con.execute("SELECT claude FROM notes").fetchone()["claude"] == "requested"
@@ -96,6 +136,7 @@ def test_work_run_pushes_branch_and_writes_companion_note(env, monkeypatch, tmp_
     from ozu import agent, db
     origin = make_origin(tmp_path)
     process_one(env, monkeypatch, claude_result())
+    queue_legacy(env)
     map_repo(monkeypatch, origin)
     monkeypatch.setattr(agent, "_run_claude", fake_run_claude)
 
@@ -127,6 +168,7 @@ def test_one_run_per_note_ever(env, monkeypatch, tmp_path):
     from ozu import agent
     origin = make_origin(tmp_path)
     process_one(env, monkeypatch, claude_result())
+    queue_legacy(env)
     map_repo(monkeypatch, origin)
     monkeypatch.setattr(agent, "_run_claude", fake_run_claude)
     assert agent.work_pending() == 1
@@ -143,6 +185,7 @@ def test_run_cap_bounds_a_cycle(env, monkeypatch, tmp_path):
              claude_request=True, actions=[]),
     ]
     process_one(env, monkeypatch, two)
+    queue_legacy(env)
     monkeypatch.setenv("OZU_MAX_CLAUDE_RUNS", "1")
     map_repo(monkeypatch, origin)
     monkeypatch.setattr(agent, "_run_claude", fake_run_claude)
@@ -156,6 +199,7 @@ def test_failed_run_is_marked_error_not_retried(env, monkeypatch, tmp_path):
     from ozu import agent, db
     origin = make_origin(tmp_path)
     process_one(env, monkeypatch, claude_result())
+    queue_legacy(env)
     map_repo(monkeypatch, origin)
 
     def boom(prompt, workdir):
@@ -175,6 +219,7 @@ def test_ledger_survives_index_rebuild(env, monkeypatch, tmp_path):
     from ozu import agent, db, indexer
     origin = make_origin(tmp_path)
     process_one(env, monkeypatch, claude_result())
+    queue_legacy(env)
     map_repo(monkeypatch, origin)
     monkeypatch.setattr(agent, "_run_claude", fake_run_claude)
     agent.work_pending()
@@ -251,6 +296,21 @@ def test_no_run_loads_an_mcp_server(env, monkeypatch, tmp_path):
         assert "--mcp-config" not in cmd
 
 
+def test_no_run_loads_settings_from_its_working_directory(env, monkeypatch, tmp_path):
+    """Every run's cwd is content someone else can write — a fresh clone of a
+    mapped repo, or the vault. `-p` skips the workspace-trust dialog, so a
+    planted <cwd>/.claude/settings.json is loaded; measured 2026-11-02 its
+    `permissions.allow` did not widen the allowlist but its `hooks` *ran*,
+    which is arbitrary code as `ubuntu` before any tool rule applies. Only the
+    box's own user settings may be loaded."""
+    from ozu import agent
+    seen = _capture_cmds(monkeypatch, agent)
+    agent._run_claude("prompt", tmp_path, allowed_tools="Read(//x/**)")
+    agent._run_claude("prompt", tmp_path, writes=True)
+    for cmd in seen:
+        assert cmd[cmd.index("--setting-sources") + 1] == "user"
+
+
 def test_only_the_runs_that_change_code_may_write(monkeypatch, env):
     """The work run and Build execution edit a clone; learn, research, the
     wiki and a Build proposal only return text, so none of them passes
@@ -300,12 +360,49 @@ def test_file_tools_are_pinned_to_the_working_directory(tmp_path):
 def test_work_run_can_run_tests_but_not_a_general_shell(tmp_path):
     from ozu import agent
     tools = agent.work_tools(tmp_path)
-    for allowed in ("Bash(git:*)", "Bash(pytest:*)", "Bash(npm test:*)",
-                    "Bash(make test:*)"):
+    for allowed in ("Bash(git status:*)", "Bash(git commit:*)", "Bash(pytest:*)",
+                    "Bash(npm test:*)", "Bash(make test:*)"):
         assert allowed in tools
     for refused in ("Bash(pip", "Bash(npm install", "Bash(systemctl",
                     "Bash(curl", "Bash(rm", "Bash(sudo"):
         assert refused not in tools
+
+
+def test_no_runner_in_the_allowlist_fetches_what_it_runs(tmp_path):
+    """A work run installs nothing (invariant 9), so no allowed command may be
+    one that fetches code and executes it. `npx vitest` was exactly that until
+    2026-11-06: npx downloads a package that is not installed and runs its bin,
+    lifecycle scripts included, as `ubuntu` — and on this box /usr/bin/npx
+    exists and prompts for nothing with stdin closed, so the rule was live, not
+    latent. `npm test`/`yarn test` run the repo's own script and fetch nothing;
+    they stay, useless-without-vendored-deps rather than a way in."""
+    from ozu import agent
+    assert not any(p.split()[0] in ("npx", "pnpx", "pipx", "uvx", "bunx")
+                   for p in agent.WORK_BASH)
+    assert "Bash(npx" not in agent.work_tools(tmp_path)
+    # The runners that stay are the ones that execute code already in the clone.
+    assert "npm test" in agent.WORK_BASH and "make test" in agent.WORK_BASH
+
+
+def test_git_is_allowed_by_subcommand_not_as_a_prefix(tmp_path):
+    """`Bash(git:*)` was an arbitrary file reader and command runner, because a
+    prefix rule matches every suffix and git's options reach past the
+    subcommand: measured on the box, `git diff --no-index --unified=0 /dev/null
+    <path>` printed any file the `ubuntu` user can read and `git -c
+    alias.x='!<cmd>' x` ran <cmd>, neither of them starting with `git push`.
+    The allowlist therefore names subcommands, and what a prefix cannot contain
+    is denied — `git diff` among it, since `--no-index` can follow any flag."""
+    from ozu import agent
+    assert "git" not in agent.WORK_BASH
+    assert all(p.startswith("git ") and p.count(" ") == 1
+               for p in agent.WORK_BASH if p.split()[0] == "git")
+    tools = agent.work_tools(tmp_path)
+    assert "Bash(git:*)" not in tools and "Bash(git diff" not in tools
+    for denied in ("Bash(git push:*)", "Bash(git -c:*)", "Bash(git -C:*)",
+                   "Bash(git --:*)", "Bash(git config:*)", "Bash(git diff:*)"):
+        assert denied in agent.DENIED_TOOLS
+        # Read-only runs deny Bash whole, but inherit these for good measure.
+        assert denied in agent.READ_ONLY_DENIED
 
 
 def test_pipeline_owns_pushing(env, monkeypatch, tmp_path):
@@ -338,6 +435,7 @@ def test_digest_surfaces_work_runs(env, monkeypatch, tmp_path):
              topic="garden", claude_request=True, actions=[]),
     ]
     process_one(env, monkeypatch, two)
+    queue_legacy(env)
     map_repo(monkeypatch, origin)  # kettle mapped, garden not
     monkeypatch.setattr(agent, "_run_claude", fake_run_claude)
     agent.work_pending()
@@ -395,6 +493,7 @@ def test_pr_url_lands_in_companion_note(env, monkeypatch, tmp_path):
     from ozu import agent
     origin = make_origin(tmp_path)
     process_one(env, monkeypatch, claude_result())
+    queue_legacy(env)
     map_repo(monkeypatch, origin)
     monkeypatch.setattr(agent, "_run_claude", fake_run_claude)
     monkeypatch.setattr(agent, "_github_repo", lambda url: "example/kettle")
@@ -410,6 +509,7 @@ def test_pr_failure_falls_back_to_compare_link(env, monkeypatch, tmp_path):
     from ozu import agent, db
     origin = make_origin(tmp_path)
     process_one(env, monkeypatch, claude_result())
+    queue_legacy(env)
     map_repo(monkeypatch, origin)
     monkeypatch.setattr(agent, "_run_claude", fake_run_claude)
     monkeypatch.setattr(agent, "_github_repo", lambda url: "example/kettle")

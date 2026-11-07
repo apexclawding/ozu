@@ -154,13 +154,23 @@ def write_notes(result: dict, *, notebook: str, page_row_id: int,
         # directives are inert behind the wall, like edges and actions below
         claude_req = bool(note.get("claude_request")) and vault_name == "personal"
         research_req = bool(note.get("research_request")) and vault_name == "personal"
-        # A page-level propose directive turns @claude from the old one-shot
-        # run into a Build proposal: the note queues as `build-requested`,
-        # which the builds phase picks up and agent.work_pending (which
-        # selects only 'requested') can never fire — one grammar, one path.
-        proposing = (result.get("build_directive") or {}).get("kind") == "propose"
-        claude_status = ("build-requested" if claude_req and proposing
-                         else "requested" if claude_req else "")
+        # @claude queues a Build *proposal*, never the old one-shot writing
+        # run: the note becomes `build-requested`, which the builds phase
+        # picks up and agent.work_pending (which selects only 'requested')
+        # can never fire — one grammar, one path, every one through paper.
+        # This no longer asks the page-level `build_directive` whether it
+        # said "propose". It used to, and the two flags come from the same
+        # model answer on the same page: any read that set `claude_request`
+        # while leaving `kind` at anything else — a returning document,
+        # where the annotation prompt's only kinds are input/approve/drop,
+        # or simply an inconsistent answer — opened the unattended path that
+        # clones a mapped repo, runs Claude with writing allowed and pushes
+        # a branch with no paper step. CONVENTIONS.md has promised since the
+        # Build grammar shipped that "there is no unattended path left;
+        # every @claude goes through paper"; the code now holds that.
+        # The legacy queue itself stays (agent.py) for notes queued before
+        # this change; nothing new enters it.
+        claude_status = "build-requested" if claude_req else ""
         reasons = [r.strip() for r in (note.get("related_reason") or "").split(";")]
         why = {rid: reasons[i] for i, rid in enumerate(related)
                if i < len(reasons) and reasons[i]}
