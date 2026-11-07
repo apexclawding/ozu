@@ -1,9 +1,11 @@
 """@claude work runs: headless Claude Code building a flagged idea in its repo.
 
-A handwritten @claude beside an idea arrives here as frontmatter
-`claude: requested` (set by vault.write_notes — personal vault only, so a
-walled page can never trigger a run). For each requested note whose topic has
-a repo in OZU_CLAUDE_REPOS, this module clones that repo fresh under
+This is the legacy one-shot queue, and **nothing new enters it**: a
+handwritten @claude now always queues a Build proposal (`claude:
+build-requested`, see vault.write_notes) which the owner approves on paper
+before anything is written. What is left here runs the notes that were
+already `claude: requested` when that changed. For each requested note whose
+topic has a repo in OZU_CLAUDE_REPOS, this module clones that repo fresh under
 ~/ozu-data/agent/, lets Claude Code work the idea on a `claude/<note-id>` branch,
 pushes that branch — never the default branch — and writes a companion note
 into the vault linking the diff for review.
