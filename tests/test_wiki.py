@@ -222,3 +222,22 @@ def test_sunday_evening_carries_the_wiki_sheet_once(env, monkeypatch):
     assert "Wiki this week" in text and "page: wiki-llm-wiki-pattern" in text
     assert "Raw stays raw" in text and "[[" not in text and "☐" not in text
     assert wiki.gather_sheet(con, sunday) is None               # marked sent
+
+
+def test_index_line_never_cuts_mid_word():
+    from ozu.wiki import index_line
+    short = "Let the model keep compiled pages; you keep the raw notes."
+    assert index_line(short) == short
+    # the 2026-11-01 sheet printed "…bring in other fields and a red"
+    long = ("How to get more than the literal task out of Claude: state the outcome "
+            "rather than the task (altitude), ask for an expert's methods and an "
+            "unreasonable target (depth), bring in other fields and a red team (range), "
+            "and hand the result to an outside judge.")
+    out = index_line(long)
+    assert len(out) <= 200 and out.endswith("…")
+    assert long.startswith(out[:-1]) and long[len(out) - 1] in " ,"
+    # a whole sentence that fits is kept whole, without an ellipsis
+    two = "First sentence is long enough to keep, " + "really " * 15 + "it is. " + "x " * 80
+    assert index_line(two).endswith("it is.")
+    assert index_line("y" * 300) == "y" * 199 + "…"
+    assert index_line("word " * 100, limit=20) == "word word word word…"
