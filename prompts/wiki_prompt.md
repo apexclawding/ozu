@@ -47,7 +47,7 @@ Respond with ONLY a JSON object, no Markdown fences, exactly this shape:
     {{
       "id": "wiki-short-slug",
       "title": "Human title of the subject",
-      "description": "One sentence: what the page tells them (the index line).",
+      "description": "One sentence of at most 30 words (under 200 characters): what the page tells them (the index line).",
       "tags": ["lowercase", "tags"],
       "body": "the full page in the shape above",
       "change": "one line: what changed on this page in this run and from which note(s), e.g. 'added the checklist safeguard from [[note-id]]'"

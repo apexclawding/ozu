@@ -58,6 +58,9 @@ SHEET_PAGES = 8
 SHEET_CLAIMS = 8
 SHEET_META = "wiki_sheet_through"
 FAILED_META = "wiki_failed_on"
+# A page's description is its index line: one row of the listing every run
+# is prompted with, and the line the Sunday sheet prints under the title.
+INDEX_LINE_MAX = 200
 
 
 def wiki_tools(vault_dir: Path) -> str:
@@ -66,6 +69,24 @@ def wiki_tools(vault_dir: Path) -> str:
 
 def wiki_dir() -> Path:
     return get_config().vault_dir / "topics" / TOPIC
+
+
+def index_line(text: str, limit: int = INDEX_LINE_MAX) -> str:
+    """Fit a description into `limit` characters without cutting it mid-word.
+    A slice at a fixed width printed "…bring in other fields and a red" on
+    paper. Prefer the last whole sentence (if that keeps at least half the
+    room); otherwise end on the last whole word and mark the cut with "…"."""
+    text = " ".join(text.split())
+    if len(text) <= limit:
+        return text
+    head = text[:limit + 1]                         # +1: a space after a full word
+    ends = [m.end() for m in re.finditer(r"[.!?](?=\s)", head) if m.end() <= limit]
+    if ends and ends[-1] >= limit // 2:
+        return text[:ends[-1]]
+    cut = head[:limit].rfind(" ") if head[limit] != " " else limit
+    if cut <= 0:                                    # one enormous word
+        return text[:limit - 1] + "…"
+    return text[:cut].rstrip(" ,;:—–-([") + "…"
 
 
 def _frontmatter_of(path: Path) -> tuple[dict, str]:
@@ -183,7 +204,7 @@ def _write_page(con, page: dict, known: set[str], titles: dict[str, tuple[str, s
         log.warning("wiki: refusing %s — empty body", pid)
         return None
     title = str(page.get("title") or pid).strip()[:120]
-    desc = (str(page.get("description") or "").strip() or title)[:200]
+    desc = index_line(str(page.get("description") or "").strip() or title)
     tags = ["wiki"] + [t for t in (str(x).strip().lower() for x in page.get("tags") or [])
                        if re.fullmatch(r"[a-z0-9][a-z0-9-]*", t) and t != "wiki"][:8]
 
