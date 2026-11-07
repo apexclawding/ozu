@@ -409,6 +409,41 @@ def _ink_text(result: dict) -> str:
     return text.strip(" \t\n-—:·")
 
 
+# The tag each applied directive has to be able to point at in the ink. A
+# proposal's decision box PRINTS these very words (`digest_pdf.
+# build_propose_pdf`), on the page the answer is written on — and
+# printed-vs-handwritten is the first distinction a vision read collapses
+# (invariant 5b: at low effort a mail's own printed `[x] Buy NAS Drive` came
+# back as a fresh tick). A completion read off the print is held against the
+# ink by `understand._check_ticks` (D-11); an approval was held against
+# nothing, and it is the heavier half of the pair — a completion closes a
+# line, an approval starts a headless run that writes code and opens a PR.
+_DIRECTIVE_TAG = {"approve": "@approved", "input": "@input", "drop": "@drop"}
+
+
+def _handwriting(result: dict) -> str:
+    """The reader's fields that the annotation prompt defines as HANDWRITTEN
+    ink only. Note bodies are deliberately excluded even though they too are
+    ink: they are told to open with the printed line they respond to ("Re:
+    <the printed heading> — …"), so a printed tag rides in there legitimately
+    and would corroborate itself."""
+    return " ".join(str(result.get(k) or "")
+                    for k in ("transcription", "drawing_description"))
+
+
+def uncorroborated(kind: str, result: dict) -> str | None:
+    """The tag `kind` needs when the handwriting does not carry it; None when
+    the ink says it too (or when the kind has no tag to check). Matched
+    case-insensitively, and tolerating a space after the `@`: the reader
+    transcribes what it sees, and `@Approved` is the same decision."""
+    tag = _DIRECTIVE_TAG.get(kind)
+    if tag is None:
+        return None
+    if re.search(rf"@\s*{tag[1:]}\b", _handwriting(result), re.I):
+        return None
+    return tag
+
+
 def route_annotation(con, page, result: dict) -> tuple[str | None, str | None]:
     """One annotated page, routed. Returns (build_id, disposition):
     (None, None) when the page has nothing to do with a Build; (id, 'margin')
@@ -481,6 +516,28 @@ def apply_directive(con, build: dict, kind: str, model: str | None,
     bid, title = str(fm.get("id")), str(fm.get("title") or "")
     status = str(fm.get("build") or "")
     today = dt.date.today().isoformat()
+
+    missing = uncorroborated(kind, result)
+    if missing:
+        # Held, not applied: the reader reported a decision that this page's
+        # handwriting does not say. The printed decision box says those exact
+        # words, so the cheap failure is reading one of them back as ink —
+        # and that is the whole of the authorisation for a run that writes
+        # code. Checked before the terminal states so an uncorroborated
+        # directive gets one plain answer rather than a confident one about a
+        # Build it was never aimed at. It comes back on paper like a withheld
+        # completion does (D-11): a second write settles it.
+        text = _ink_text(result)
+        quoted = f" Ink read on the page: “{text[:200]}”." if text else ""
+        db.add_build_event(con, bid,
+                           f"{bid} ({title}): read as {missing}, but no "
+                           f"handwritten {missing} is on that page — nothing "
+                           f"was applied. The decision box prints those words; "
+                           f"only your ink decides.{quoted} Write {missing} "
+                           f"again and re-export to apply it.")
+        log.warning("build %s: directive %r withheld — no handwritten %s",
+                    bid, kind, missing)
+        return
 
     if status == "split":
         # The parent's document is still on the device and will be annotated
