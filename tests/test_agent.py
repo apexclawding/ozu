@@ -296,6 +296,21 @@ def test_no_run_loads_an_mcp_server(env, monkeypatch, tmp_path):
         assert "--mcp-config" not in cmd
 
 
+def test_no_run_loads_settings_from_its_working_directory(env, monkeypatch, tmp_path):
+    """Every run's cwd is content someone else can write — a fresh clone of a
+    mapped repo, or the vault. `-p` skips the workspace-trust dialog, so a
+    planted <cwd>/.claude/settings.json is loaded; measured 2026-11-02 its
+    `permissions.allow` did not widen the allowlist but its `hooks` *ran*,
+    which is arbitrary code as `ubuntu` before any tool rule applies. Only the
+    box's own user settings may be loaded."""
+    from ozu import agent
+    seen = _capture_cmds(monkeypatch, agent)
+    agent._run_claude("prompt", tmp_path, allowed_tools="Read(//x/**)")
+    agent._run_claude("prompt", tmp_path, writes=True)
+    for cmd in seen:
+        assert cmd[cmd.index("--setting-sources") + 1] == "user"
+
+
 def test_only_the_runs_that_change_code_may_write(monkeypatch, env):
     """The work run and Build execution edit a clone; learn, research, the
     wiki and a Build proposal only return text, so none of them passes

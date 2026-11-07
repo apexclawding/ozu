@@ -237,9 +237,21 @@ def _run_claude(prompt: str, workdir: Path, allowed_tools: str | None = None,
     # Ozu's own server carries `capture`, a vault write. The allowlist already
     # refuses them; this keeps them out of the toolbox of a run that reads
     # third-party text at all.
+    # --setting-sources user: the box's own ~/.claude/settings.json is loaded,
+    # <cwd>/.claude/settings{,.local}.json never. Every run's cwd is content
+    # someone else writes — a fresh clone of a mapped repo, or the vault the
+    # NAS bridge pushes into — and `-p` skips the workspace-trust dialog by
+    # design. Measured here 2026-11-02 on claude 2.1.316 with a planted
+    # <cwd>/.claude/settings.json: its `permissions.allow` did *not* widen the
+    # run (--allowedTools won, under dontAsk and acceptEdits alike), but its
+    # `hooks.SessionStart` *ran*, in both modes, before any tool call — i.e.
+    # arbitrary code as `ubuntu`, who can read ~/ozu-data/.env, reached by nothing
+    # the tool rules of invariants 8/8b can see. With the flag it did not fire.
+    # Deleting .claude/ from the clone is the wrong fix: the run commits its
+    # own branch, so a deleted tracked file would ride into the PR.
     cmd = [cfg.claude_bin, "-p", prompt, *permission_flags(writes),
            "--allowedTools", allowed_tools or work_tools(workdir),
-           "--strict-mcp-config",
+           "--strict-mcp-config", "--setting-sources", "user",
            "--output-format", "json"]
     if model:
         cmd += ["--model", model]
