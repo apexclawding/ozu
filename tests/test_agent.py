@@ -368,6 +368,22 @@ def test_work_run_can_run_tests_but_not_a_general_shell(tmp_path):
         assert refused not in tools
 
 
+def test_no_runner_in_the_allowlist_fetches_what_it_runs(tmp_path):
+    """A work run installs nothing (invariant 9), so no allowed command may be
+    one that fetches code and executes it. `npx vitest` was exactly that until
+    2026-11-06: npx downloads a package that is not installed and runs its bin,
+    lifecycle scripts included, as `ubuntu` — and on this box /usr/bin/npx
+    exists and prompts for nothing with stdin closed, so the rule was live, not
+    latent. `npm test`/`yarn test` run the repo's own script and fetch nothing;
+    they stay, useless-without-vendored-deps rather than a way in."""
+    from ozu import agent
+    assert not any(p.split()[0] in ("npx", "pnpx", "pipx", "uvx", "bunx")
+                   for p in agent.WORK_BASH)
+    assert "Bash(npx" not in agent.work_tools(tmp_path)
+    # The runners that stay are the ones that execute code already in the clone.
+    assert "npm test" in agent.WORK_BASH and "make test" in agent.WORK_BASH
+
+
 def test_git_is_allowed_by_subcommand_not_as_a_prefix(tmp_path):
     """`Bash(git:*)` was an arbitrary file reader and command runner, because a
     prefix rule matches every suffix and git's options reach past the

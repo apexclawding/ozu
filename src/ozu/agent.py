@@ -140,6 +140,11 @@ def scoped(tools: tuple[str, ...], workdir: Path) -> list[str]:
 # clone has no node_modules. Installing them is deliberately not offered:
 # `npm install` runs arbitrary postinstall code as `ubuntu`, which is the one
 # thing this allowlist exists to prevent.
+# So no runner here may be one that *fetches* what it runs: `npx vitest` was
+# that same install under another name and went on 2026-11-06 (reasoning and
+# measurements in test_agent.no_runner_in_the_allowlist_fetches_what_it_runs).
+# `npm test`/`yarn test` stay — they run the clone's own script and fetch
+# nothing, so without vendored deps they are useless, not a way in.
 # `git` was one of these prefixes until 2026-10-28 and was not a git allowlist
 # at all: a prefix matches every suffix and git's options reach past the
 # subcommand, so `git diff --no-index /dev/null <path>` read any file `ubuntu`
@@ -150,7 +155,7 @@ WORK_BASH = ("git status", "git add", "git commit", "git log",
              "git checkout", "git branch",
              "python -m unittest", "python3 -m unittest",
              "pytest", "python -m pytest", "python3 -m pytest",
-             ".venv/bin/pytest", "npm test", "npm run test", "npx vitest",
+             ".venv/bin/pytest", "npm test", "npm run test",
              "yarn test", "make test", "go test", "cargo test")
 
 # Deny beats allow, whatever the allowlist says — and whatever Claude Code
