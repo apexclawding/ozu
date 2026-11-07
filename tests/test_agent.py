@@ -300,12 +300,33 @@ def test_file_tools_are_pinned_to_the_working_directory(tmp_path):
 def test_work_run_can_run_tests_but_not_a_general_shell(tmp_path):
     from ozu import agent
     tools = agent.work_tools(tmp_path)
-    for allowed in ("Bash(git:*)", "Bash(pytest:*)", "Bash(npm test:*)",
-                    "Bash(make test:*)"):
+    for allowed in ("Bash(git status:*)", "Bash(git commit:*)", "Bash(pytest:*)",
+                    "Bash(npm test:*)", "Bash(make test:*)"):
         assert allowed in tools
     for refused in ("Bash(pip", "Bash(npm install", "Bash(systemctl",
                     "Bash(curl", "Bash(rm", "Bash(sudo"):
         assert refused not in tools
+
+
+def test_git_is_allowed_by_subcommand_not_as_a_prefix(tmp_path):
+    """`Bash(git:*)` was an arbitrary file reader and command runner, because a
+    prefix rule matches every suffix and git's options reach past the
+    subcommand: measured on the box, `git diff --no-index --unified=0 /dev/null
+    <path>` printed any file the `ubuntu` user can read and `git -c
+    alias.x='!<cmd>' x` ran <cmd>, neither of them starting with `git push`.
+    The allowlist therefore names subcommands, and what a prefix cannot contain
+    is denied — `git diff` among it, since `--no-index` can follow any flag."""
+    from ozu import agent
+    assert "git" not in agent.WORK_BASH
+    assert all(p.startswith("git ") and p.count(" ") == 1
+               for p in agent.WORK_BASH if p.split()[0] == "git")
+    tools = agent.work_tools(tmp_path)
+    assert "Bash(git:*)" not in tools and "Bash(git diff" not in tools
+    for denied in ("Bash(git push:*)", "Bash(git -c:*)", "Bash(git -C:*)",
+                   "Bash(git --:*)", "Bash(git config:*)", "Bash(git diff:*)"):
+        assert denied in agent.DENIED_TOOLS
+        # Read-only runs deny Bash whole, but inherit these for good measure.
+        assert denied in agent.READ_ONLY_DENIED
 
 
 def test_pipeline_owns_pushing(env, monkeypatch, tmp_path):

@@ -138,16 +138,32 @@ def scoped(tools: tuple[str, ...], workdir: Path) -> list[str]:
 # clone has no node_modules. Installing them is deliberately not offered:
 # `npm install` runs arbitrary postinstall code as `ubuntu`, which is the one
 # thing this allowlist exists to prevent.
-WORK_BASH = ("git",
+# `git` was one of these prefixes until 2026-10-28 and was not a git allowlist
+# at all: a prefix matches every suffix and git's options reach past the
+# subcommand, so `git diff --no-index /dev/null <path>` read any file `ubuntu`
+# can (~/ozu-data/.env included) and `git -c alias.x='!<cmd>' x` ran <cmd> — neither
+# starting with `git push`. Hence subcommands, which leaves `git -c`, `-C`,
+# `--git-dir=` and `--exec-path=` matched by no rule at all.
+WORK_BASH = ("git status", "git add", "git commit", "git log",
+             "git checkout", "git branch",
              "python -m unittest", "python3 -m unittest",
              "pytest", "python -m pytest", "python3 -m pytest",
              ".venv/bin/pytest", "npm test", "npm run test", "npx vitest",
              "yarn test", "make test", "go test", "cargo test")
 
-# Deny beats allow, whatever the allowlist says. The pipeline owns pushing and
-# pushes exactly one branch; `git:*` by itself would also permit the agent to
-# run `git push origin HEAD:main`, which is the one thing it must never do.
-DENIED_TOOLS = "Bash(git push:*)"
+# Deny beats allow, whatever the allowlist says — and whatever Claude Code
+# auto-approves, which is what makes this the half that holds: a work run is
+# `acceptEdits` (invariant 8b). The pipeline owns pushing and pushes exactly
+# one branch, so `git push origin HEAD:main` is the one thing a run must never
+# do; the rest are the escapes above, belt to the allowlist's braces. `git
+# config` writes the same alias into the clone's own config, and `git diff` is
+# denied whole rather than allowed as `git diff --stat`, because `--no-index`
+# can follow any flag (`git diff --stat --no-index -p /dev/null <path>` prints
+# the file) and no prefix rule can keep it inside the clone. The run reviews
+# its work with `git status --short` and its clone-scoped `Read`.
+DENIED_TOOLS = ",".join(("Bash(git push:*)", "Bash(git -c:*)", "Bash(git -C:*)",
+                         "Bash(git --:*)", "Bash(git config:*)",
+                         "Bash(git diff:*)"))
 
 # A run that only produces text (learn, research, a Build proposal, the wiki)
 # must not be able to write at all. `acceptEdits` approves edits *and*
