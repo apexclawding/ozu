@@ -1,5 +1,6 @@
 # ozu-capture youtube source on the NAS. Lives in its own directory on the
-# NAS, beside a `.env` that sets PUID, PGID and VOICE_INBOX (README.md); the
+# NAS, beside a `.env` that holds everything per install (README.md), so this
+# file is copied verbatim; the
 # repo tree is unpacked into ./src by README.md's ship step.
 #
 # Caps (Amendment 1 C2/NFR-06): this box already runs other services at
@@ -24,16 +25,18 @@ services:
     environment:
       OZU_CAPTURE_DATA: /data
       OZU_CAPTURE_CONFIG: /data/config.toml
-      TZ: UTC
+      # Note dates and log times follow it; UTC unless .env says otherwise.
+      TZ: ${TZ:-UTC}
       # The only remote is the vault; the key can push nowhere else (FR-33 +
       # a per-repo deploy key). Host key pinned from /ssh/known_hosts.
       GIT_SSH_COMMAND: >-
         ssh -i /ssh/id_ed25519 -o IdentitiesOnly=yes
         -o UserKnownHostsFile=/ssh/known_hosts -o StrictHostKeyChecking=yes
-      GIT_AUTHOR_NAME: Your Name
-      GIT_AUTHOR_EMAIL: you@example.com
-      GIT_COMMITTER_NAME: Your Name
-      GIT_COMMITTER_EMAIL: you@example.com
+      # Who the vault commits are from: per install, so from .env, never here.
+      GIT_AUTHOR_NAME: ${GIT_NAME:?set GIT_NAME in .env}
+      GIT_AUTHOR_EMAIL: ${GIT_EMAIL:?set GIT_EMAIL in .env}
+      GIT_COMMITTER_NAME: ${GIT_NAME:?set GIT_NAME in .env}
+      GIT_COMMITTER_EMAIL: ${GIT_EMAIL:?set GIT_EMAIL in .env}
     volumes:
       - ./data:/data
       - ./ssh:/ssh:ro
