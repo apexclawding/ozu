@@ -1,7 +1,6 @@
 # The youtube source on the NAS
 
-The Learning booster's capture half (`Ozu's Learn sheet (ozu `DESIGN.md`, invariant 11)`
-§6.1): every 30 minutes the container lists the "Learn" playlist, turns
+The capture half of Ozu's Learn sheet (`DESIGN.md`, invariant 11): every 30 minutes the container lists the "Learn" playlist, turns
 each new video's captions into a transcript note under `topics/learning/`
 in `you/vault`, and pushes it. Videos without captions are
 handed to the Mac's WHISPER lane by dropping the audio plus a `yt-<id>.json`
@@ -14,9 +13,11 @@ Pick a directory for it on the NAS (below, `DIR`, for example
 
 ```
 $DIR/
-├── .env             ← PUID, PGID (the NAS user that owns the shares) and
-│                       VOICE_INBOX (the share's path on the NAS)
-├── compose.yml      ← this directory's compose.yml, copied
+├── .env             ← everything per install: PUID, PGID (the NAS user that
+│                       owns the shares), VOICE_INBOX (the share's path),
+│                       GIT_NAME, GIT_EMAIL (who the vault commits are from),
+│                       TZ (optional; UTC by default)
+├── compose.yml      ← this directory's compose.yml, copied verbatim
 ├── src/             ← the repo tree at a committed HEAD (build context)
 ├── data/            ← /data in the container: config.toml, ledger.db,
 │                       vault/ (its own clone), tmp/, ozu-capture.log, .local/
@@ -35,8 +36,13 @@ Once, on the NAS (over `ssh nas.local`):
    PUID=1000
    PGID=1000
    VOICE_INBOX=/path/to/VoiceInbox
+   GIT_NAME=Your Name
+   GIT_EMAIL=you@example.com
+   TZ=Europe/Paris
    ```
    with the uid and gid of the user that owns the share (`id <user>`).
+   `docker compose` refuses to start without `GIT_NAME` and `GIT_EMAIL`;
+   `TZ` sets the day a note is dated by and may be left out (UTC).
 2. Create the keypair and pin GitHub's host key under `$DIR/ssh/` with
    the commands in [Re-keying](#re-keying) plus
    `ssh-keyscan github.com > $DIR/ssh/known_hosts`. Add the public half to
