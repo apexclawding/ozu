@@ -51,6 +51,16 @@ LOOPBACK = {"127.0.0.1", "localhost", "::1"}
 log = logging.getLogger("ozu.mcp_oauth")
 
 
+def http_lib():
+    """The HTTP client the MCP SDK itself ships: `httpx2` from mcp 2.x on
+    (same API), `httpx` before. No dependency of our own."""
+    try:
+        import httpx2 as lib
+    except ImportError:
+        import httpx as lib
+    return lib
+
+
 # --------------------------------------------------------------- settings
 
 @dataclass
@@ -124,6 +134,7 @@ def settings_from_config(cfg) -> OAuthSettings:
         from mcp.server.auth.settings import ClientRegistrationOptions  # noqa: F401
         if "subject" not in AccessToken.model_fields:
             raise ImportError
+        http_lib()
     except ImportError:
         problems.append("the installed mcp SDK has no OAuth provider API this "
                         "server supports (needs mcp>=2)")
@@ -246,8 +257,7 @@ class GitHubOAuthProvider:
     def _http(self):
         if self._http_factory:
             return self._http_factory()
-        import httpx
-        return httpx.AsyncClient(timeout=HTTP_TIMEOUT, follow_redirects=False)
+        return http_lib().AsyncClient(timeout=HTTP_TIMEOUT, follow_redirects=False)
 
     def redirect_allowed(self, uri: str) -> bool:
         if len(uri) > MAX_URI_LEN:
@@ -483,7 +493,7 @@ class GitHubOAuthProvider:
     async def _github_identity(self, code: str, verifier: str) -> tuple[int, str]:
         """GitHub code -> (id, login). The GitHub token is used for one call
         and then deleted at GitHub; it is never stored."""
-        import httpx
+        httpx = http_lib()
         gh_token = None
         try:
             async with self._http() as http:

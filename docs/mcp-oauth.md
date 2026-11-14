@@ -146,8 +146,9 @@ are stored as issued, because the SDK's client authenticator compares the
 stored value; claude.ai registers as a public client and gets none, and a
 client secret alone grants nothing without a code and its PKCE verifier.
 
-**No new dependency.** The SDK supplies the OAuth endpoints; `httpx` (already
-a dependency of `mcp`) talks to GitHub; `sqlite3`, `secrets`, `hashlib` and
+**No new dependency.** The SDK supplies the OAuth endpoints; the HTTP
+client the SDK itself depends on (`httpx2` from mcp 2.x, an API-compatible
+continuation of `httpx`; `httpx` if that is what is installed) talks to GitHub; `sqlite3`, `secrets`, `hashlib` and
 `html` do the rest. OAuth mode needs the SDK 2.x provider API (it checks for
 it and refuses to start otherwise); the static bearer still works on 1.x.
 

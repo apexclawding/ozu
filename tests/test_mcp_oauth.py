@@ -14,11 +14,14 @@ import sys
 import time
 from urllib.parse import parse_qs, urlencode, urlparse
 
-import httpx
 import pytest
 
 pytest.importorskip("mcp.server.auth.provider")
 from starlette.testclient import TestClient  # noqa: E402
+
+from ozu.mcp_oauth import http_lib  # noqa: E402
+
+httpx = http_lib()   # the client the SDK ships (httpx2 on mcp 2.x)
 
 from test_mcp_wall import MINE, TOKEN, WALLED, _plant  # noqa: E402
 
