@@ -222,7 +222,9 @@ bundle you can open in Obsidian. Over MCP, Claude gets `search_notes`,
 
 Over ssh, the key is the auth and no port is exposed. For Claude.ai, `ozu mcp
 --http` serves on loopback behind a bearer token. Put a TLS proxy in front
-(`deploy/caddy-mcp.conf`).
+(`deploy/caddy-mcp.conf`). claude.ai connectors (web and phone) sign in only
+by OAuth: turn on the optional OAuth mode, which pins one GitHub account and
+gives connectors read-only tools (`docs/mcp-oauth.md`).
 
 ## Costs
 

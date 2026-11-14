@@ -13,9 +13,14 @@ Over HTTP every request must carry `Authorization: Bearer $OZU_MCP_TOKEN`.
 Without OZU_MCP_TOKEN set, `--http` refuses to start: an unauthenticated
 endpoint is how the whole vault leaks, and defaulting to open is worse than
 not running. stdio needs no token — it is a pipe to a local process.
+
+With OZU_MCP_OAUTH=1 the HTTP server is also its own OAuth authorization
+server, so claude.ai connectors can sign in (mcp_oauth.py, docs/mcp-oauth.md).
+OAuth tokens get `vault:read` only; the static bearer keeps every tool.
 """
 from __future__ import annotations
 
+import functools
 import os
 import secrets
 import sys
@@ -41,6 +46,56 @@ _TOOLS: list = []
 def _tool(fn):
     _TOOLS.append(fn)
     return fn
+
+
+# The scope a tool needs when a request carries an access token. Anything not
+# named here only reads. `capture` writes to the vault, so it needs the
+# static bearer's scope, which OAuth never issues.
+FULL_SCOPE = SCOPE            # == mcp_oauth.FULL_SCOPE
+READ_SCOPE = "vault:read"     # == mcp_oauth.READ_SCOPE
+WRITE_TOOLS = {"capture"}
+
+
+def _token_scopes():
+    """The scopes of the current request's access token, or None when the
+    request carries none (stdio, or a direct call)."""
+    try:
+        from mcp.server.auth.middleware.auth_context import get_access_token
+    except ImportError:  # an SDK without auth support cannot have authenticated anything
+        return None
+    tok = get_access_token()
+    return None if tok is None else set(tok.scopes)
+
+
+try:  # a refusal the SDK reports as a tool error, not as a crash
+    from mcp.server.mcpserver.exceptions import ToolError as _Refused
+except ImportError:  # mcp SDK 1.x
+    try:
+        from mcp.server.fastmcp.exceptions import ToolError as _Refused
+    except ImportError:
+        _Refused = PermissionError
+
+
+def _allowed(name: str, scopes) -> bool:
+    if FULL_SCOPE in scopes:
+        return True
+    return name not in WRITE_TOOLS and READ_SCOPE in scopes
+
+
+def _scoped(fn, auth_on: bool):
+    """The tool, checked against the caller's token scopes at call time. This
+    is the control; hiding a tool from tools/list is only a courtesy. With
+    auth on, a call that somehow carries no token is refused (fail closed)."""
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        scopes = _token_scopes()
+        if scopes is None and auth_on:
+            raise _Refused("no access token on this request")
+        if scopes is not None and not _allowed(fn.__name__, scopes):
+            need = FULL_SCOPE if fn.__name__ in WRITE_TOOLS else READ_SCOPE
+            raise _Refused(f"{fn.__name__} requires scope {need}")
+        return fn(*args, **kwargs)
+    return wrapper
 
 
 def _con():
@@ -171,10 +226,27 @@ class StaticToken:
         return None
 
 
-def build_server(token: str = "") -> "_Server":
-    """The server with its tools attached. A token turns on bearer auth."""
+def build_server(token: str = "", oauth=None) -> "_Server":
+    """The server with its tools attached. A token turns on bearer auth; an
+    `oauth` provider (mcp_oauth.GitHubOAuthProvider, which also answers for
+    the token) turns on the OAuth endpoints as well."""
     kwargs = {}
-    if token:
+    if oauth is not None:
+        from mcp.server.auth.settings import (AuthSettings, ClientRegistrationOptions,
+                                              RevocationOptions)
+        kwargs = dict(
+            auth_server_provider=oauth,
+            auth=AuthSettings(
+                issuer_url=oauth.issuer, resource_server_url=oauth.resource,
+                # Every token, the static bearer included, carries vault:read;
+                # what more a tool needs is checked per call by _scoped.
+                required_scopes=[READ_SCOPE],
+                client_registration_options=ClientRegistrationOptions(
+                    enabled=True, valid_scopes=[READ_SCOPE], default_scopes=[READ_SCOPE]),
+                revocation_options=RevocationOptions(enabled=True),
+                validate_token_resource=True),
+        )
+    elif token:
         from mcp.server.auth.settings import AuthSettings
         cfg = get_config()
         # A static bearer token is a shared secret, not a token issued for an
@@ -195,9 +267,25 @@ def build_server(token: str = "") -> "_Server":
                               required_scopes=[SCOPE], **extra),
         )
     server = _Server("ozu-graph", **kwargs)
+    auth_on = bool(kwargs)
     for fn in _TOOLS:
-        server.tool()(fn)
+        server.tool()(_scoped(fn, auth_on))
+    if oauth is not None:
+        oauth.install(server)
+        _hide_unallowed_tools(server)
     return server
+
+
+def _hide_unallowed_tools(server) -> None:
+    """tools/list shows a session only what its token may call. Cosmetic:
+    the call-time check in _scoped is what refuses."""
+    listed = server.list_tools
+
+    async def list_tools():
+        scopes = _token_scopes()
+        tools = await listed()
+        return tools if scopes is None else [t for t in tools if _allowed(t.name, scopes)]
+    server.list_tools = list_tools
 
 
 def transport_security():
@@ -236,7 +324,13 @@ def main() -> None:
             "print(secrets.token_urlsafe(32))\"`\n"
             f"and add it to {cfg.home / '.env'} as "
             "OZU_MCP_TOKEN=... (no inline comment — the value would keep it).")
-    server = build_server(cfg.mcp_token)
+    from . import mcp_oauth
+    oauth = None
+    if mcp_oauth.enabled(cfg):  # refuses to start half-configured
+        oauth = mcp_oauth.GitHubOAuthProvider(mcp_oauth.settings_from_config(cfg),
+                                              static_token=cfg.mcp_token)
+        mcp_oauth.quiet_access_log()
+    server = build_server(cfg.mcp_token, oauth=oauth)
     kwargs = {"transport": "streamable-http",
               "transport_security": transport_security()}
     # Detect by capability, not by version: `settings` exists in both SDK
