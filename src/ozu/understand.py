@@ -411,7 +411,7 @@ def process_pending() -> int:
                 notebook=page["notebook"],
                 page_row_id=page["id"],
                 image_path=Path(page["image_path"]),
-                needs_review=needs_review or build_disposition == "unmatched",
+                needs_review=needs_review or build_disposition in ("unmatched", "refused"),
                 related_build=build_id,
             )
             db.mark_page(con, page["id"], "processed")

@@ -335,6 +335,162 @@ def test_margin_ink_links_to_the_build(env, monkeypatch, sent, runs, tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# a directive needs a printed key; approval needs the current revision
+
+def _status(env):
+    from ozu import db
+    return db.connect(env.db_path).execute(
+        "SELECT status FROM builds").fetchone()["status"]
+
+
+def _unstamped_page(env, monkeypatch, bid, result):
+    """A summary page case: an edition page that lists the Build
+    id and title but prints no Build stamp, under an edition file name."""
+    process_page(env, monkeypatch, result, at_root=True,
+                 path_name="Ozu Morning 2026-11-14  - Kindle.pdf",
+                 text=f"Waiting\n{bid}  Kettle freemium pricing  12 d\n"
+                      f"[{result['transcription']}]")
+
+
+def test_build_ref_alone_never_applies_a_directive(
+        env, monkeypatch, sent, runs, tmp_path):
+    """Failure pinned: `@approved` written beside a row of the Morning's
+    summary table, plus a reader that copies the id into build_ref,
+    approved a Build whose plan is not on the page. Neither file name nor
+    stamp names the Build, so nothing is applied, the notes are needs_review
+    and the mail says why. Holds for @input and @drop too."""
+    from ozu import db
+    bid, _ = make_build(env, monkeypatch, sent, runs, tmp_path)
+    note = {"title": "Margin: rows", "slug": "rows", "topic": "kettle",
+            "tags": ["kettle"], "summary": "s", "body": "b", "related": [],
+            "related_reason": "", "actions": [], "claude_request": False,
+            "research_request": False}
+    for kind, word in (("approve", "@approved"), ("input", "@input smaller"),
+                       ("drop", "@drop")):
+        _unstamped_page(env, monkeypatch, bid, annotation_result(
+            kind, build_ref=bid, transcription=word, notes=[dict(note, slug=kind)]))
+        assert _status(env) == "proposed"
+    con = db.connect(env.db_path)
+    assert "build_pending" not in (env.vault_dir / "topics" / "kettle" / f"{bid}.md").read_text()
+    assert [r["needs_review"] for r in con.execute(
+        "SELECT needs_review FROM notes WHERE title LIKE 'Margin: rows'")] == [1, 1, 1]
+    lines = [e["line"] for e in db.unreported_build_events(con)]
+    assert len(lines) == 3 and all("does not print this Build" in l and "nothing ran" in l
+                                   and "\u2610" not in l for l in lines)
+
+
+def test_build_ref_alone_still_links_margin_notes(
+        env, monkeypatch, sent, runs, tmp_path):
+    """Failure pinned: closing the directive hole must not cost the link —
+    margin ink on an unstamped page that the reader pins to a Build still
+    gets its edge to that Build, and no refusal line is written."""
+    from ozu import db
+    bid, _ = make_build(env, monkeypatch, sent, runs, tmp_path)
+    margin = {"title": "Margin: edition thought", "slug": "edition-thought",
+              "topic": "kettle", "tags": ["kettle"], "summary": "s",
+              "body": "b", "related": [], "related_reason": "", "actions": [],
+              "claude_request": False, "research_request": False}
+    _unstamped_page(env, monkeypatch, bid, annotation_result(
+        "none", build_ref=bid, notes=[margin], transcription="thought"))
+    con = db.connect(env.db_path)
+    note = con.execute("SELECT * FROM notes WHERE title LIKE 'Margin: edition%'").fetchone()
+    assert con.execute("SELECT 1 FROM edges WHERE src=? AND dst=?",
+                       (note["id"], bid)).fetchone()
+    assert not db.unreported_build_events(con)
+
+
+def test_printed_rev_reads_stamp_and_both_filename_shapes(env, monkeypatch):
+    """Failure pinned: the printed revision was never read at all. It must
+    come from the text-layer stamp, the current file name and the legacy
+    `Old Build <id> r1` name, under two prefixes; a result stamp has none."""
+    import ozu.config as config
+    from ozu.builds import printed_rev
+    monkeypatch.setenv("OZU_DIGEST_PREFIXES", "ozu,old")
+    config._config = None
+    b = "B-260906-7f3a"
+    assert printed_rev("", f"x\nOzu Build {b} r3\ny", b) == (3, "stamp")
+    assert printed_rev("", f"Old Build {b} r2", b) == (2, "stamp")
+    assert printed_rev(f"OZU Build r2 - Some idea ({b})  - Kindle", "", b) == (2, "filename")
+    assert printed_rev(f"Old Build {b} r1  - Kindle (1)", "", b) == (1, "filename")
+    assert printed_rev(f"Ozu Build r2 - t ({b})", f"Ozu Build {b} r2", b) == (2, "stamp+filename")
+    assert printed_rev("Ozu Evening", f"Ozu Build {b} result", b) == (None, "result")
+    assert printed_rev("Ozu Evening", "no stamp here", b) == (None, "unreadable")
+    # another Build's stamp on the page is not this Build's revision
+    assert printed_rev("", "Ozu Build B-260906-0000 r4", b) == (None, "unreadable")
+    config._config = None
+
+
+def test_stamp_and_filename_revisions_disagree_is_needs_review(
+        env, monkeypatch, sent, runs, tmp_path):
+    """Failure pinned: a file name saying r1 over a page stamped r2 (or the
+    reverse) has no single answer to 'which plan did he read'. Nothing is
+    applied, the notes are needs_review, and the mail says so."""
+    from ozu import db
+    from ozu.builds import printed_rev
+    bid, _ = make_build(env, monkeypatch, sent, runs, tmp_path)
+    assert printed_rev(f"Ozu Build r1 - t ({bid})", f"Ozu Build {bid} r2", bid) == \
+        (None, "disagree")
+    note = {"title": "Margin: which one", "slug": "which", "topic": "kettle",
+            "tags": ["kettle"], "summary": "s", "body": "b", "related": [],
+            "related_reason": "", "actions": [], "claude_request": False,
+            "research_request": False}
+    process_page(env, monkeypatch,
+                 annotation_result("approve", build_ref=bid, notes=[note],
+                                   transcription="@approved"),
+                 at_root=True, path_name=f"Ozu Build r1 - Kettle ({bid})  - Kindle.pdf",
+                 text=f"Ozu Build {bid} r2\nbody")
+    con = db.connect(env.db_path)
+    assert _status(env) == "proposed"
+    assert con.execute("SELECT needs_review FROM notes WHERE title LIKE 'Margin: which%'"
+                       ).fetchone()["needs_review"] == 1
+    assert "different revisions" in db.unreported_build_events(con)[0]["line"]
+
+
+def _r2(env, monkeypatch, sent, runs, tmp_path):
+    from ozu import builds
+    bid, _ = make_build(env, monkeypatch, sent, runs, tmp_path)
+    annotate(env, monkeypatch, bid,
+             annotation_result("input", build_ref=bid, transcription="@input fewer lines"))
+    assert builds.run_pending() == 1
+    return bid
+
+
+def test_approval_on_an_older_revision_is_refused(
+        env, monkeypatch, sent, runs, tmp_path):
+    """Failure pinned: `@approved` on an r1 page after r2 exists executed r2,
+    text not on that page. Refused with the revision named; the
+    same ink on the r2 page approves."""
+    from ozu import db
+    bid = _r2(env, monkeypatch, sent, runs, tmp_path)
+    annotate(env, monkeypatch, bid,
+             annotation_result("approve", build_ref=bid, transcription="@approved"),
+             rev="r1", name=f"Ozu Build r1 - Kettle ({bid})  - Kindle.pdf")
+    assert _status(env) == "revised"
+    line = db.unreported_build_events(db.connect(env.db_path))[-1]["line"]
+    assert "you approved r1; the plan is now r2" in line and "Nothing ran" in line
+    annotate(env, monkeypatch, bid,
+             annotation_result("approve", build_ref=bid, transcription="@approved ok"),
+             rev="r2", name=f"Ozu Build r2 - Kettle ({bid})  - Kindle.pdf")
+    assert _status(env) == "approved"
+
+
+def test_input_on_an_older_revision_still_folds_in(
+        env, monkeypatch, sent, runs, tmp_path):
+    """Failure pinned: the revision gate must not swallow `@input` or
+    `@drop` on an older revision; both are safe and stay applied."""
+    bid = _r2(env, monkeypatch, sent, runs, tmp_path)
+    annotate(env, monkeypatch, bid,
+             annotation_result("input", build_ref=bid, transcription="@input and Fridays"),
+             rev="r1", name=f"Ozu Build r1 - Kettle ({bid})  - Kindle.pdf")
+    note = env.vault_dir / "topics" / "kettle" / f"{bid}.md"
+    assert "build_pending: revise" in note.read_text() and "and Fridays" in note.read_text()
+    annotate(env, monkeypatch, bid,
+             annotation_result("drop", build_ref=bid, transcription="@drop"),
+             rev="r1", name=f"Ozu Build r1 - Kettle ({bid}) (1)  - Kindle.pdf")
+    assert _status(env) == "dropped"
+
+
+# ---------------------------------------------------------------------------
 # revise / approve / execute / drop
 
 def test_input_revises_and_sends_r2(env, monkeypatch, sent, runs, tmp_path):
@@ -516,6 +672,30 @@ def test_a_directive_the_ink_does_not_say_is_withheld(
                                transcription="@ Approved — go"),
              rev="r1", name=f"Ozu Build {bid} r1 (4)  - Kindle.pdf")
     assert "build: approved" in note.read_text()
+
+
+def test_a_failed_builds_result_page_can_still_retry_it(
+        env, monkeypatch, sent, runs, tmp_path):
+    """Failure pinned: a result section's stamp prints no revision, so the
+    revision gate must not strand the documented retry ("write @approved on
+    the Build page") from the result of a failed run. It applies only
+    while the Build is in `error`; on a Build still awaiting a decision a
+    result page approves nothing."""
+    from ozu import agent, builds, db
+    bid, _ = make_build(env, monkeypatch, sent, runs, tmp_path)
+    page = lambda t: process_page(
+        env, monkeypatch, annotation_result("approve", build_ref=bid, transcription=t),
+        at_root=True, path_name=f"Ozu Evening {t}  - Kindle.pdf",
+        text=f"Ozu Build {bid} result\nbody [{t}]")
+    page("@approved first")
+    assert _status(env) == "proposed"       # a result page cannot approve a proposal
+    annotate(env, monkeypatch, bid,
+             annotation_result("approve", build_ref=bid, transcription="@approved"))
+    monkeypatch.setattr(agent, "_run_claude", lambda *a, **k: 1 / 0)
+    builds.run_pending()
+    assert _status(env) == "error"
+    page("@approved retry")
+    assert _status(env) == "approved"
 
 
 def test_failed_execution_is_error_and_reapprovable(
