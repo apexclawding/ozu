@@ -170,6 +170,12 @@ device and is still worth reading, but ink on it changes nothing: the next
 edition answers with the ids of the Builds that took over its work, and
 those are the documents to annotate.
 
+A Build decision counts only on a page that prints that Build — its own
+document or its result — and `@approved` only on the latest revision: the
+same words beside a Build id on a summary page, or on an older revision's
+page, are answered with a line and run nothing (`@input` and `@drop` on an
+older revision still count).
+
 A page the pipeline cannot match to exactly one
 Build — say the file name and your written id disagree — changes nothing:
 the ink is filed as a `needs_review` note and the next edition tells you,

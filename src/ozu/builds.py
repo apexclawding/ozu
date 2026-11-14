@@ -401,6 +401,35 @@ def match_build(notebook: str, printed_text: str,
     return agreed.pop(), "+".join(sorted(keys))
 
 
+_STAMP_TAIL = re.compile(r"(r\d+|result)[ \t]*$", re.I)
+# `<brand> Build r2 - <title> (B-…)` and the older `<brand> Build B-… r1`
+_NAME_REV = re.compile(r"\bBuild[ \t]+(?:r(\d+)\b|B-\d{6}-[0-9a-f]{4}[ \t]+r(\d+)\b)",
+                       re.I)
+
+
+def printed_rev(notebook: str, printed_text: str,
+                build_id: str) -> tuple[int | None, str]:
+    """The revision this page prints, and where it was read: (n, 'stamp' |
+    'filename' | 'stamp+filename'), (None, 'result') for a result section
+    (its stamp names no revision), (None, 'disagree') when the stamp and the
+    file name print different revisions, (None, 'unreadable') when neither
+    does. Any configured prefix, both file-name shapes."""
+    stamps = set()
+    for m in header_re().finditer(printed_text or ""):
+        if canonical_id(m.group(1)) == build_id:
+            stamps.add(_STAMP_TAIL.search(m.group(0)).group(1).lower())
+    revs = {int(t[1:]) for t in stamps if t != "result"}
+    nm = _NAME_REV.search(notebook or "")
+    name_rev = int(nm.group(1) or nm.group(2)) if nm else None
+    if len(revs) > 1 or (revs and name_rev is not None and name_rev not in revs):
+        return None, "disagree"
+    if revs:
+        return revs.pop(), "stamp+filename" if name_rev is not None else "stamp"
+    if name_rev is not None:
+        return name_rev, "filename"
+    return None, "result" if stamps else "unreadable"
+
+
 def _ink_text(result: dict) -> str:
     """The substance of the handwriting: transcription minus the directive
     tags and any quoted Build id."""
@@ -442,6 +471,39 @@ def uncorroborated(kind: str, result: dict) -> str | None:
     if re.search(rf"@\s*{tag[1:]}\b", _handwriting(result), re.I):
         return None
     return tag
+
+
+def _printed_gate(con, build: dict, kind: str, how: str, page,
+                  result: dict) -> bool:
+    """True, with the reason in the mail, when a directive must not apply
+    because the page does not print the plan it answers: the reader's
+    build_ref only links margin notes; a decision needs the file name or the
+    printed stamp, and `@approved` the current revision (`@input`/`@drop` on
+    an older one are safe and apply)."""
+    fm = build["fm"]
+    bid, title = str(fm.get("id")), str(fm.get("title") or "")
+    tag, status = _DIRECTIVE_TAG.get(kind, "@" + kind), str(fm.get("build") or "")
+    head, cur = f"{bid} ({title}): ", int(fm.get("build_rev") or 1)
+    rev, src = printed_rev(page["notebook"], page["ocr_text"] or "", bid)
+    if not {"filename", "textlayer"} & set(how.split("+")):
+        say = (f"{tag} was written on a page that does not print this "
+               f"Build — nothing ran. Write it on the Build's own document.")
+    elif src == "disagree":
+        say = (f"the page's file name and printed header name different "
+               f"revisions — {tag} was not applied; nothing ran.")
+    elif (kind != "approve" or status in (*_EXECUTED, "dropped", "split")
+          or (src == "result" and status not in ("proposed", "revised"))
+          or rev == cur):
+        return False     # apply_directive answers terminal states; a result
+                         # page may retry an approved plan (status error)
+    elif rev is None:
+        say = ("no revision could be read from that page — @approved was "
+               "not applied; nothing ran. Write it on the Build's own document.")
+    else:
+        say = (f"you approved r{rev}; the plan is now r{cur} — approve that "
+               f"one. Nothing ran.")
+    db.add_build_event(con, bid, head + say)
+    return True
 
 
 def route_annotation(con, page, result: dict) -> tuple[str | None, str | None]:
@@ -499,7 +561,11 @@ def route_annotation(con, page, result: dict) -> tuple[str | None, str | None]:
         # margin ink (or a @claude asking for a fresh Build of a margin idea):
         # normal notes, linked to this Build via related
         return build_id, "margin"
-    apply_directive(con, load_build(path), kind, model, result)
+    build = load_build(path)
+    refused = _printed_gate(con, build, kind, how, page, result)
+    if refused:
+        return build_id, "refused"
+    apply_directive(con, build, kind, model, result)
     return build_id, kind
 
 
