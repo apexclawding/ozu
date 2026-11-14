@@ -253,6 +253,13 @@ class Config:
                 "https://claude.ai/api/mcp/auth_callback,"
                 "https://claude.com/api/mcp/auth_callback").split(",") if u.strip()]
         self.mcp_oauth_allow_loopback = os.environ.get("OZU_MCP_OAUTH_ALLOW_LOOPBACK") == "1"
+        # Dynamic client registration: closed unless 1 (or a timed window
+        # opened from the CLI); the default client is pre-registered.
+        self.mcp_oauth_registration = os.environ.get("OZU_MCP_OAUTH_REGISTRATION", "0").strip()
+        # A command (no shell) run on every new grant, given only non-secret facts.
+        self.mcp_grant_hook = os.environ.get("OZU_MCP_GRANT_HOOK", "").strip()
+        # In OAuth mode the static bearer is refused on proxied requests unless 1.
+        self.mcp_static_remote = os.environ.get("OZU_MCP_STATIC_BEARER_REMOTE", "0").strip()
         self.mcp_oauth_db = self.home / "mcp-oauth.db"
 
     def ensure_dirs(self) -> None:

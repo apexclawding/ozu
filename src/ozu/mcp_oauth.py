@@ -22,7 +22,10 @@ import logging
 import os
 import re
 import secrets
+import shlex
 import sqlite3
+import subprocess
+import threading
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -40,7 +43,12 @@ FAMILY_TTL = 90 * 86400      # one consent's chain of tokens, whatever the refre
 CLIENT_UNUSED_TTL = 3600     # a registered client that never got a token is forgotten
 MAX_REGISTRATIONS_PER_HOUR = 10
 MAX_CLIENTS = 50
-MAX_PENDING = 30             # per PENDING_TTL
+MAX_PENDING = 30             # per PENDING_TTL, for clients that never got a token
+MAX_PENDING_PER_CLIENT = 3   # per PENDING_TTL, for every client
+MAX_BODY = 16 * 1024         # every route this module adds; a form here is a few hundred bytes
+REFRESH_GRACE = 5            # s: the same client re-sending a just-rotated refresh token
+HOOK_TIMEOUT = 10            # s: OZU_MCP_GRANT_HOOK is killed after this
+REGISTRATION_WINDOW_MAX = 60  # min: `ozu mcp registration open` never longer
 MAX_REDIRECT_URIS = 4
 MAX_URI_LEN = 512
 MAX_NAME_LEN = 100
@@ -75,6 +83,9 @@ class OAuthSettings:
     allow_loopback: bool = False
     github_url: str = "https://github.com"
     github_api_url: str = "https://api.github.com"
+    registration_open: bool = False      # OZU_MCP_OAUTH_REGISTRATION=1
+    grant_hook: list[str] = field(default_factory=list)
+    static_remote: bool = False          # OZU_MCP_STATIC_BEARER_REMOTE=1
 
 
 def enabled(cfg) -> bool:
@@ -129,6 +140,15 @@ def settings_from_config(cfg) -> OAuthSettings:
             problems.append("OZU_MCP_OAUTH_REDIRECT_URIS has an entry that is not an "
                             "https (or loopback http) URL without query or fragment")
             break
+    for name, val in (("OZU_MCP_OAUTH_REGISTRATION", cfg.mcp_oauth_registration),
+                      ("OZU_MCP_STATIC_BEARER_REMOTE", cfg.mcp_static_remote)):
+        if val not in ("0", "1"):
+            problems.append(f"{name} must be 0 or 1")
+    hook: list[str] = []
+    try:
+        hook = shlex.split(cfg.mcp_grant_hook)
+    except ValueError:
+        problems.append("OZU_MCP_GRANT_HOOK is not a parseable command line")
     try:  # the provider API this module implements is the SDK 2.x one
         from mcp.server.auth.provider import AccessToken
         from mcp.server.auth.settings import ClientRegistrationOptions  # noqa: F401
@@ -155,6 +175,9 @@ def settings_from_config(cfg) -> OAuthSettings:
         allow_loopback=cfg.mcp_oauth_allow_loopback,
         github_url=cfg.mcp_github_url.rstrip("/"),
         github_api_url=cfg.mcp_github_api_url.rstrip("/"),
+        registration_open=cfg.mcp_oauth_registration == "1",
+        grant_hook=hook,
+        static_remote=cfg.mcp_static_remote == "1",
     )
 
 
@@ -163,7 +186,8 @@ def settings_from_config(cfg) -> OAuthSettings:
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS clients (
     client_id TEXT PRIMARY KEY, info TEXT NOT NULL, created REAL NOT NULL,
-    used INTEGER NOT NULL DEFAULT 0);
+    used INTEGER NOT NULL DEFAULT 0, kind TEXT NOT NULL DEFAULT 'dcr');
+CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS pending (
     txn TEXT PRIMARY KEY, client_id TEXT NOT NULL, params TEXT NOT NULL,
     stage TEXT NOT NULL, gh_state TEXT, nonce TEXT, consent TEXT,
@@ -200,6 +224,9 @@ def connect(db_path: Path) -> sqlite3.Connection:
     con = sqlite3.connect(db_path, timeout=10)
     con.row_factory = sqlite3.Row
     con.executescript(SCHEMA)
+    cols = {r[1] for r in con.execute("PRAGMA table_info(clients)")}
+    if "kind" not in cols:  # a state file from before pre-registered clients
+        con.execute("ALTER TABLE clients ADD COLUMN kind TEXT NOT NULL DEFAULT 'dcr'")
     return con
 
 
@@ -220,6 +247,9 @@ class GitHubOAuthProvider:
         self.static_token = static_token
         self._http_factory = http_factory
         self._now = clock
+        # Just-rotated refresh tokens -> the pair they were rotated into, held
+        # in memory for REFRESH_GRACE seconds and never written to disk.
+        self._grace: dict[str, tuple[float, str, object]] = {}
         connect(settings.db_path).close()  # create it 0600 now, not on first request
 
     # ---- names
@@ -311,9 +341,11 @@ class GitHubOAuthProvider:
             raise RegistrationError("invalid_client_metadata", "unsupported grant_types")
         client_info.scope = READ_SCOPE
         now = self._now()
+        if not self.registration_is_open():
+            log.warning("client registration refused: registration is closed")
+            raise RegistrationError("invalid_client_metadata", "registration is closed")
         with self._db() as con:
-            con.execute("DELETE FROM clients WHERE used=0 AND created<?",
-                        (now - CLIENT_UNUSED_TTL,))
+            self._prune(con)
             recent = con.execute("SELECT COUNT(*) FROM clients WHERE created>?",
                                  (now - 3600,)).fetchone()[0]
             total = con.execute("SELECT COUNT(*) FROM clients").fetchone()[0]
@@ -344,21 +376,31 @@ class GitHubOAuthProvider:
         now = self._now()
         txn = secrets.token_urlsafe(32)
         with self._db() as con:
-            con.execute("DELETE FROM pending WHERE expires<?", (now,))
-            n = con.execute("SELECT COUNT(*) FROM pending WHERE created>?",
-                            (now - PENDING_TTL,)).fetchone()[0]
-            if n >= MAX_PENDING:
-                log.warning("authorization refused: too many pending")
-                raise AuthorizeError("temporarily_unavailable", "too many pending authorizations")
-            con.execute(
-                "INSERT INTO pending(txn, client_id, params, stage, created, expires)"
-                " VALUES(?,?,?,?,?,?)",
-                (_h(txn), client.client_id, json.dumps({
-                    "state": params.state, "scopes": [READ_SCOPE],
-                    "code_challenge": params.code_challenge, "redirect_uri": redirect,
-                    "explicit": params.redirect_uri_provided_explicitly,
-                    "resource": self.resource,
-                }), "new", now, now + PENDING_TTL))
+            self._prune(con)
+            since = now - PENDING_TTL
+            mine = con.execute("SELECT COUNT(*) FROM pending WHERE client_id=? AND created>?",
+                               (client.client_id, since)).fetchone()[0]
+            trusted = con.execute("SELECT used FROM clients WHERE client_id=?",
+                                  (client.client_id,)).fetchone()
+            # A client that already obtained a token (or a pre-registered one)
+            # is exempt from the global cap, so a flood of fresh clients cannot
+            # lock the owner's own connector out; every client has its own cap.
+            others = 0 if (trusted and trusted["used"]) else con.execute(
+                "SELECT COUNT(*) FROM pending WHERE created>?", (since,)).fetchone()[0]
+            full = mine >= MAX_PENDING_PER_CLIENT or others >= MAX_PENDING
+            if not full:
+                con.execute(
+                    "INSERT INTO pending(txn, client_id, params, stage, created, expires)"
+                    " VALUES(?,?,?,?,?,?)",
+                    (_h(txn), client.client_id, json.dumps({
+                        "state": params.state, "scopes": [READ_SCOPE],
+                        "code_challenge": params.code_challenge, "redirect_uri": redirect,
+                        "explicit": params.redirect_uri_provided_explicitly,
+                        "resource": self.resource,
+                    }), "new", now, now + PENDING_TTL))
+        if full:  # raised outside the transaction: the SDK's errors are frozen
+            log.warning("authorization refused: too many pending")
+            raise AuthorizeError("temporarily_unavailable", "too many pending authorizations")
         return f"{self.issuer}/oauth/start?txn={txn}"
 
     def _pending(self, con, column: str, value: str | None, stage: str):
@@ -574,6 +616,11 @@ class GitHubOAuthProvider:
         log.info("issued grant %s to client %s (%r) scope=%s access_ttl=%ss",
                  family, client.client_id, client.client_name,
                  " ".join(authorization_code.scopes), ACCESS_TTL)
+        run_grant_hook(self.s.grant_hook, {
+            "OZU_GRANT_EVENT": "new_grant", "OZU_GRANT_ID": family,
+            "OZU_GRANT_CLIENT_ID": client.client_id,
+            "OZU_GRANT_CLIENT_NAME": client.client_name or "",
+            "OZU_GRANT_TIME": time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(now))})
         return token
 
     def _grant(self, con, client, authorization_code, family: str, now: float):
@@ -610,6 +657,8 @@ class GitHubOAuthProvider:
         if not fam or fam["revoked"] or fam["expires"] < now or row["expires"] < now:
             return None
         if kind == "refresh" and row["used"]:
+            if self._graced(token) is not None:
+                return row, fam   # the same token re-sent within the grace: not a reuse
             self._revoke_family(con, fam["family"])
             log.warning("rotated refresh token reused; grant %s revoked", fam["family"])
             return None
@@ -639,10 +688,27 @@ class GitHubOAuthProvider:
                             (now, fam["family"]))
                 token = self._issue(con, fam["family"], scopes or fam["scopes"].split(),
                                     fam["expires"])
-        if token is None:  # raised outside the transaction, so a reuse revocation sticks
+            if token is not None:
+                # The pair this token was rotated into, kept in memory only,
+                # for a client that sends the same refresh twice at once.
+                self._grace[_h(refresh_token.token)] = (now + REFRESH_GRACE,
+                                                        client.client_id, token)
+        if token is None:
+            graced = self._graced(refresh_token.token)
+            if graced is not None and graced[0] == client.client_id:
+                log.info("refresh re-sent within %ss; same pair returned", REFRESH_GRACE)
+                return graced[1]
+            # raised outside the transaction, so a reuse revocation sticks
             raise TokenError("invalid_grant", "refresh token is not valid")
         log.info("refreshed grant %s for client %s", fam["family"], client.client_id)
         return token
+
+    def _graced(self, refresh_token: str):
+        now = self._now()
+        for k in [k for k, v in self._grace.items() if v[0] < now]:
+            del self._grace[k]
+        hit = self._grace.get(_h(refresh_token))
+        return None if hit is None else (hit[1], hit[2])
 
     async def load_access_token(self, token: str):
         from mcp.server.auth.provider import AccessToken
@@ -673,14 +739,42 @@ class GitHubOAuthProvider:
     def _revoke_family(self, con, family: str) -> None:
         con.execute("UPDATE families SET revoked=? WHERE family=? AND revoked IS NULL",
                     (self._now(), family))
+        self._grace.clear()   # rare; never hand out a pair of a revoked grant
+
+    def registration_is_open(self) -> bool:
+        """OZU_MCP_OAUTH_REGISTRATION=1, or a window `ozu mcp registration open`
+        set that has not run out."""
+        if self.s.registration_open:
+            return True
+        with self._db() as con:
+            row = con.execute("SELECT value FROM meta WHERE key='registration_until'").fetchone()
+        return bool(row) and float(row["value"]) > self._now()
+
+    def _prune(self, con) -> None:
+        """Forget what can no longer be used. Codes are kept an hour past
+        expiry (replay detection), revoked or ended grants 30 days (the CLI
+        lists them), dynamically registered clients with no live grant left."""
+        now = self._now()
+        con.execute("DELETE FROM pending WHERE expires<?", (now,))
+        con.execute("DELETE FROM codes WHERE expires<?", (now - 3600,))
+        con.execute("DELETE FROM tokens WHERE expires<? OR family IN (SELECT family FROM "
+                    "families WHERE revoked IS NOT NULL OR expires<?)", (now, now))
+        con.execute("DELETE FROM families WHERE COALESCE(revoked, expires)<?",
+                    (now - 30 * 86400,))
+        con.execute("DELETE FROM clients WHERE kind='dcr' AND used=0 AND created<?",
+                    (now - CLIENT_UNUSED_TTL,))
+        con.execute("DELETE FROM clients WHERE kind='dcr' AND used=1 AND client_id NOT IN "
+                    "(SELECT client_id FROM families WHERE revoked IS NULL AND expires>=?)",
+                    (now,))
 
     # ---- wiring
     def install(self, server) -> None:
         """Mount the three browser routes. The SDK mounts custom routes
         without authentication, which is what a sign-in page needs."""
-        server.custom_route("/oauth/start", methods=["GET"])(self.start)
-        server.custom_route("/oauth/github/callback", methods=["GET"])(self.github_callback)
-        server.custom_route("/oauth/consent", methods=["POST"])(self.consent)
+        for path, method, handler in (("/oauth/start", "GET", self.start),
+                                      ("/oauth/github/callback", "GET", self.github_callback),
+                                      ("/oauth/consent", "POST", self.consent)):
+            server.custom_route(path, methods=[method])(_body_limited(handler))
 
 
 # ------------------------------------------------------------------ pages
@@ -718,6 +812,7 @@ def _consent_page(client, redirect_uri: str, gh_login: str, consent: str, flow: 
         f"(scope <code>{READ_SCOPE}</code>). It cannot write to the vault.</p>"
         f"<p>Access will be sent to:<br><span class=host>{e(p.hostname or '')}</span><br>"
         f"<code>{e(redirect_uri)}</code></p>{warn}"
+        "<p><b>If you did not just press Connect in Claude yourself, press Deny.</b></p>"
         "<form method=post action='/oauth/consent'>"
         f"<input type=hidden name=flow value='{e(flow, quote=True)}'>"
         f"<input type=hidden name=consent value='{e(consent, quote=True)}'>"
@@ -746,20 +841,214 @@ def quiet_access_log() -> None:
     logging.getLogger("uvicorn.access").addFilter(RedactQuery())
 
 
+# ------------------------------------------------------- edge, hook, body
+
+def _body_limited(handler):
+    """A custom route with the SDK's own body cap in front of it. The SDK
+    caps the routes it mounts (/token answers 413) but not custom ones, and
+    an unauthenticated 300 MB form was read whole into memory before this."""
+    from starlette.routing import request_response
+    from mcp.server.transport_security import RequestBodyLimitMiddleware
+    return RequestBodyLimitMiddleware(request_response(handler), MAX_BODY)
+
+
+def _env_value(v: str) -> str:
+    return re.sub(r"[\x00-\x1f\x7f]", " ", str(v))[:200]
+
+
+def run_grant_hook(argv: list[str], facts: dict[str, str]) -> None:
+    """OZU_MCP_GRANT_HOOK: run `argv` (already split, never through a shell)
+    in the background with only non-secret facts in its environment. It can
+    neither block nor fail a grant: a crash, a non-zero exit or a hang past
+    HOOK_TIMEOUT is logged and nothing else happens."""
+    if not argv:
+        return
+    env = {k: os.environ[k] for k in ("PATH", "HOME", "LANG", "LC_ALL", "TZ") if k in os.environ}
+    env.update({k: _env_value(v) for k, v in facts.items()})
+
+    def run():
+        try:
+            r = subprocess.run(argv, env=env, stdin=subprocess.DEVNULL,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                               timeout=HOOK_TIMEOUT, check=False)
+            if r.returncode:
+                log.warning("grant hook exited with status %s", r.returncode)
+        except subprocess.TimeoutExpired:
+            log.warning("grant hook killed after %ss", HOOK_TIMEOUT)
+        except (OSError, ValueError) as exc:
+            log.warning("grant hook could not run (%s)", type(exc).__name__)
+
+    threading.Thread(target=run, name="ozu-grant-hook", daemon=True).start()
+
+
+class OAuthEdge:
+    """The outermost ASGI layer in OAuth mode, in front of the SDK's app.
+
+    - The static bearer never expires and carries every tool, so it is
+      refused on any request that came through the reverse proxy (one that
+      carries X-Forwarded-For or Forwarded) unless OZU_MCP_STATIC_BEARER_REMOTE=1.
+      This relies on the proxy always setting X-Forwarded-For (Caddy does,
+      and deploy/caddy-mcp.conf sets it explicitly): a client cannot remove a
+      header the proxy adds.
+    - It serves the authorization-server metadata itself, so that it can say
+      `authorization_response_iss_parameter_supported` and advertise the
+      registration endpoint only while registration is open.
+    - While registration is closed, /register answers 404.
+    """
+
+    def __init__(self, app, provider: "GitHubOAuthProvider", auth_settings):
+        self.app, self.p, self.auth = app, provider, auth_settings
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+        from starlette.datastructures import Headers
+        from starlette.responses import JSONResponse, Response
+        headers = Headers(scope=scope)
+        path, method = scope.get("path", ""), scope.get("method", "")
+        auth = headers.get("authorization", "")
+        if (not self.p.s.static_remote and self.p.static_token
+                and ("x-forwarded-for" in headers or "forwarded" in headers)
+                and auth[:7].lower() == "bearer " and _same(auth[7:], self.p.static_token)):
+            log.warning("static bearer refused on a proxied request")
+            prm = self.p.issuer + "/.well-known/oauth-protected-resource/mcp"
+            return await JSONResponse(
+                {"error": "invalid_token",
+                 "error_description": "this token is not accepted through the proxy"},
+                status_code=401, headers={"WWW-Authenticate": (
+                    'Bearer error="invalid_token", error_description="this token is not '
+                    f'accepted through the proxy", resource_metadata="{prm}"')})(
+                scope, receive, send)
+        if path == "/.well-known/oauth-authorization-server" and method == "GET":
+            return await self._metadata()(scope, receive, send)
+        if path.rstrip("/") == "/register" and not self.p.registration_is_open():
+            return await Response("Not Found", status_code=404)(scope, receive, send)
+        return await self.app(scope, receive, send)
+
+    def _metadata(self):
+        from mcp.server.auth.json_response import PydanticJSONResponse
+        from mcp.server.auth.routes import build_metadata
+        from mcp.server.auth.settings import ClientRegistrationOptions, RevocationOptions
+        md = build_metadata(
+            self.auth.issuer_url, self.auth.service_documentation_url,
+            ClientRegistrationOptions(enabled=self.p.registration_is_open(),
+                                      valid_scopes=[READ_SCOPE]),
+            RevocationOptions(enabled=True))
+        md.authorization_response_iss_parameter_supported = True
+        return PydanticJSONResponse(content=md, headers={
+            "Cache-Control": "no-store", "Access-Control-Allow-Origin": "*"})
+
+
+def create_client(db_path: Path, name: str, redirect_uris: list[str],
+                  auth_method: str = "client_secret_post") -> tuple[str, str]:
+    """A pre-registered confidential client: (client_id, client_secret). The
+    secret is stored as issued (the SDK's client check compares the stored
+    value, so a hash cannot satisfy it); the file is 0600 and the secret is
+    worth nothing without a code, which needs the owner's GitHub sign-in."""
+    from mcp.shared.auth import OAuthClientInformationFull
+    cid, secret = "ozu-" + secrets.token_hex(8), secrets.token_urlsafe(32)
+    now = time.time()
+    info = OAuthClientInformationFull(
+        client_id=cid, client_secret=secret, client_id_issued_at=int(now),
+        client_secret_expires_at=0, client_name=name, redirect_uris=redirect_uris,
+        token_endpoint_auth_method=auth_method, scope=READ_SCOPE,
+        grant_types=["authorization_code", "refresh_token"], response_types=["code"])
+    con = connect(db_path)
+    with con:
+        con.execute("INSERT INTO clients(client_id, info, created, used, kind)"
+                    " VALUES(?,?,?,1,'static')", (cid, info.model_dump_json(), now))
+    con.close()
+    log.info("pre-registered client %s name=%r", cid, name)
+    return cid, secret
+
+
 # -------------------------------------------------------------------- CLI
 
 def _fmt(ts) -> str:
     return time.strftime("%Y-%m-%d %H:%M", time.localtime(ts)) if ts else "-"
 
 
-def cli(args: list[str], db_path: Path) -> int:
-    """`ozu mcp tokens list | revoke <grant> | revoke --client <id> | revoke --all`.
-    Prints grant ids and metadata, never a token."""
+USAGE = """usage: ozu mcp tokens list | tokens revoke <grant-id> | tokens revoke --client <id>
+                     | tokens revoke --all
+       ozu mcp client create [--name NAME] [--auth post|basic] | client list
+                     | client revoke <client-id>
+       ozu mcp registration open [MINUTES] | registration close | registration status"""
+
+
+def cli(args: list[str], cfg) -> int:
+    """`ozu mcp tokens|client|registration ...`. Prints ids and metadata,
+    never a token; `client create` prints its new secret once."""
+    db_path = cfg.mcp_oauth_db
+    group, rest = (args[0], args[1:]) if args else ("", [])
+    if group == "client" and rest[:1] == ["create"]:
+        name, method = "Claude", "client_secret_post"
+        it = iter(rest[1:])
+        for a in it:
+            if a == "--name":
+                name = next(it, name)[:MAX_NAME_LEN]
+            elif a == "--auth":
+                method = {"post": "client_secret_post",
+                          "basic": "client_secret_basic"}.get(next(it, ""), "")
+        if not method or not cfg.mcp_oauth_redirect_uris:
+            print(USAGE if not method else "OZU_MCP_OAUTH_REDIRECT_URIS is empty")
+            return 2
+        cid, secret = create_client(db_path, name, list(cfg.mcp_oauth_redirect_uris), method)
+        print(f"client id:     {cid}\nclient secret: {secret}\n"
+              f"redirect URIs: {', '.join(cfg.mcp_oauth_redirect_uris)}\n"
+              f"auth method:   {method}\n"
+              "The secret is shown this once. Enter both in the connector's settings.")
+        return 0
     if not db_path.exists():
         print("no OAuth state yet (OAuth has never been on)")
         return 0
     con = connect(db_path)
     now = time.time()
+    try:
+        if group == "client" and rest == ["list"]:
+            for r in con.execute("SELECT * FROM clients ORDER BY created"):
+                info = json.loads(r["info"])
+                live = con.execute("SELECT COUNT(*) FROM families WHERE client_id=? AND "
+                                   "revoked IS NULL AND expires>=?",
+                                   (r["client_id"], now)).fetchone()[0]
+                print(f"{r['client_id']}  {r['kind']:6} name={info.get('client_name')!r} "
+                      f"auth={info.get('token_endpoint_auth_method')} "
+                      f"created={_fmt(r['created'])} live_grants={live}")
+            return 0
+        if group == "client" and len(rest) == 2 and rest[0] == "revoke":
+            with con:
+                n = con.execute("UPDATE families SET revoked=? WHERE client_id=? AND "
+                                "revoked IS NULL", (now, rest[1])).rowcount
+                gone = con.execute("DELETE FROM clients WHERE client_id=?", (rest[1],)).rowcount
+            print(f"client {'removed' if gone else 'not found'}; revoked {n} grant(s)")
+            return 0
+        if group == "registration" and rest[:1] == ["open"]:
+            minutes = int(rest[1]) if len(rest) > 1 and rest[1].isdigit() else 10
+            minutes = max(1, min(minutes, REGISTRATION_WINDOW_MAX))
+            with con:
+                con.execute("INSERT OR REPLACE INTO meta(key, value) VALUES"
+                            "('registration_until', ?)", (str(now + 60 * minutes),))
+            log.info("dynamic registration opened for %d min from the CLI", minutes)
+            print(f"registration open until {_fmt(now + 60 * minutes)} ({minutes} min)")
+            return 0
+        if group == "registration" and rest in (["close"], ["status"]):
+            if rest == ["close"]:
+                with con:
+                    con.execute("DELETE FROM meta WHERE key='registration_until'")
+            row = con.execute("SELECT value FROM meta WHERE key='registration_until'").fetchone()
+            always = cfg.mcp_oauth_registration == "1"
+            until = float(row["value"]) if row else 0
+            print("registration: " + ("open (OZU_MCP_OAUTH_REGISTRATION=1)" if always else
+                                      f"open until {_fmt(until)}" if until > now else "closed"))
+            return 0
+        if group == "tokens":
+            return _tokens(con, rest, now)
+    finally:
+        con.close()
+    print(USAGE)
+    return 2
+
+
+def _tokens(con, args: list[str], now: float) -> int:
     if args[:1] == ["list"]:
         rows = con.execute("SELECT * FROM families ORDER BY created").fetchall()
         for f in rows:
@@ -786,6 +1075,5 @@ def cli(args: list[str], db_path: Path) -> int:
         log.info("revoked %d grant(s) from the CLI", n)
         print(f"revoked {n} grant(s)")
         return 0
-    print("usage: ozu mcp tokens list | revoke <grant-id> | revoke --client <client-id>"
-          " | revoke --all")
+    print(USAGE)
     return 2

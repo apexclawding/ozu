@@ -42,7 +42,9 @@ outside. Fix a 421 by setting the URL, never by disabling DNS-rebinding
 protection. Optional OAuth for claude.ai connectors (`OZU_MCP_OAUTH=1`,
 `docs/mcp-oauth.md`) refuses to start half-configured, pins one GitHub
 account by numeric id, and issues `vault:read` only: `capture` stays with the
-static bearer, checked per call.
+static bearer, checked per call, deny by default. The connector uses a
+pre-registered confidential client; dynamic registration is closed unless
+opened, and the static bearer is refused through the proxy.
 
 **4. Secrets live in `~/ozu-data/.env` only** (chmod 600). They are never
 committed and never echoed into logs.

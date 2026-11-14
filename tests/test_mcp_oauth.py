@@ -79,12 +79,12 @@ class Clock:
         return self.t
 
 
-@pytest.fixture()
-def env(tmp_path, monkeypatch):
+def make_env(tmp_path, monkeypatch, **settings_kw):
     monkeypatch.setenv("OZU_HOME", str(tmp_path / "ozu"))
     monkeypatch.setenv("OZU_VAULT_DIR", str(tmp_path / "vault"))
     monkeypatch.setenv("OZU_WORK_VAULT_DIR", str(tmp_path / "work-vault"))
     monkeypatch.setenv("OZU_MCP_PUBLIC_URL", PUBLIC)
+    monkeypatch.setenv("OZU_MCP_OAUTH_REDIRECT_URIS", REDIRECT)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test")
     for k in ("OZU_ALLOW_WORK_MCP", "OZU_MCP_OAUTH", "OZU_MCP_TOKEN"):
         monkeypatch.delenv(k, raising=False)
@@ -99,15 +99,36 @@ def env(tmp_path, monkeypatch):
     settings = mcp_oauth.OAuthSettings(
         public_url=PUBLIC, github_client_id="fake-gh-client", github_client_secret=GH_SECRET,
         github_login=PINNED_LOGIN, github_user_id=PINNED_ID,
-        db_path=tmp_path / "ozu" / "mcp-oauth.db", redirect_uris=[REDIRECT])
+        db_path=tmp_path / "ozu" / "mcp-oauth.db", redirect_uris=[REDIRECT],
+        **{"registration_open": True, **settings_kw})
     provider = mcp_oauth.GitHubOAuthProvider(settings, static_token=STATIC,
                                              http_factory=gh.factory, clock=clock)
     server = srv.build_server(STATIC, oauth=provider)
-    app = server.streamable_http_app(transport_security=srv.transport_security())
+    app = srv.oauth_app(server, provider)
     _plant(srv, tmp_path, "work")
-    with TestClient(app, base_url=PUBLIC) as client:
-        yield type("Env", (), dict(c=client, gh=gh, clock=clock, provider=provider,
-                                   srv=srv, mod=mcp_oauth, tmp=tmp_path))
+    return type("Env", (), dict(gh=gh, clock=clock, provider=provider, srv=srv, server=server,
+                                app=app, mod=mcp_oauth, tmp=tmp_path, cfg=config.get_config()))
+
+
+@pytest.fixture()
+def env(tmp_path, monkeypatch):
+    """Dynamic registration open, as the DCR tests need. The default posture
+    (closed, a pre-registered client) has its own fixture below."""
+    e = make_env(tmp_path, monkeypatch)
+    with TestClient(e.app, base_url=PUBLIC) as client:
+        e.c = client
+        yield e
+    import ozu.config as config
+    config._config = None
+
+
+@pytest.fixture()
+def closed(tmp_path, monkeypatch):
+    e = make_env(tmp_path, monkeypatch, registration_open=False)
+    with TestClient(e.app, base_url=PUBLIC) as client:
+        e.c = client
+        yield e
+    import ozu.config as config
     config._config = None
 
 
@@ -153,8 +174,8 @@ def approve(e, page, action="approve"):
                     follow_redirects=False)
 
 
-def get_code(e):
-    cid = register(e.c).json()["client_id"]
+def get_code(e, name="Claude"):
+    cid = register(e.c, name=name).json()["client_id"]
     _, page = consent_page(e, cid)
     assert page.status_code == 200, page.text
     r = approve(e, page)
@@ -177,8 +198,8 @@ def refresh(c, cid, rt):
                                   "client_id": cid})
 
 
-def grant(e):
-    cid, code = get_code(e)
+def grant(e, name="Claude"):
+    cid, code = get_code(e, name)
     r = token(e.c, cid, code)
     assert r.status_code == 200, r.text
     return cid, r.json()
@@ -248,7 +269,7 @@ def test_happy_path_reads_but_cannot_capture(env):
     res = call(env.c, at, sid, "get_note", note_id=MINE)
     assert not res.get("isError") and "harmless" in json.dumps(res)
     res = call(env.c, at, sid, "capture", text="should never land")
-    assert res["isError"] and "requires scope ozu" in json.dumps(res)
+    assert res["isError"] and "not available to this token" in json.dumps(res)
     assert not list((env.tmp / "vault").rglob("*should-never*"))
 
 
@@ -399,6 +420,10 @@ def test_refresh_rotates_and_reuse_kills_the_grant(env):
     assert r.status_code == 200
     new = r.json()
     assert new["refresh_token"] != tok["refresh_token"]
+    # Re-sent at once by the same client (two requests in flight): the same pair.
+    again = refresh(env.c, cid, tok["refresh_token"])
+    assert again.status_code == 200 and again.json() == new
+    env.clock.t += env.mod.REFRESH_GRACE + 1
     old = refresh(env.c, cid, tok["refresh_token"])
     assert old.status_code == 400 and old.json()["error"] == "invalid_grant"
     # Reuse of a rotated token is theft or a bug either way: the whole grant dies.
@@ -419,12 +444,11 @@ def test_revoked_token_is_refused_endpoint_and_cli(env, capsys):
     assert refresh(env.c, cid, tok["refresh_token"]).status_code == 400
 
     cid, tok = grant(env)
-    db = env.provider.s.db_path
-    assert env.mod.cli(["list"], db) == 0
+    assert env.mod.cli(["tokens", "list"], env.cfg) == 0
     out = capsys.readouterr().out
     assert "active" in out and "revoked" in out
     assert tok["access_token"] not in out and tok["refresh_token"] not in out
-    assert env.mod.cli(["revoke", "--all"], db) == 0
+    assert env.mod.cli(["tokens", "revoke", "--all"], env.cfg) == 0
     assert env.c.post("/mcp", json={}, headers={
         "Authorization": "Bearer " + tok["access_token"]}).status_code == 401
 
@@ -503,7 +527,8 @@ OAUTH_ENV = {"OZU_MCP_OAUTH": "1", "OZU_MCP_TOKEN": STATIC,
 
 def _main_with(monkeypatch, tmp_path, **env):
     monkeypatch.setenv("OZU_HOME", str(tmp_path / "home"))
-    for k in list(OAUTH_ENV) + ["OZU_MCP_OAUTH_REDIRECT_URIS"]:
+    for k in list(OAUTH_ENV) + ["OZU_MCP_OAUTH_REDIRECT_URIS", "OZU_MCP_OAUTH_REGISTRATION",
+                                "OZU_MCP_STATIC_BEARER_REMOTE", "OZU_MCP_GRANT_HOOK"]:
         monkeypatch.delenv(k, raising=False)
     for k, v in env.items():
         monkeypatch.setenv(k, v)
@@ -532,7 +557,9 @@ def test_half_configured_oauth_refuses_to_start(monkeypatch, tmp_path, missing):
     ("OZU_MCP_OAUTH", "true"), ("OZU_MCP_GITHUB_USER_ID", "vault-owner"),
     ("OZU_MCP_PUBLIC_URL", "http://ozu.example.com"),
     ("OZU_MCP_PUBLIC_URL", "https://ozu.example.com/mcp"),
-    ("OZU_MCP_OAUTH_REDIRECT_URIS", "http://evil.example/cb")])
+    ("OZU_MCP_OAUTH_REDIRECT_URIS", "http://evil.example/cb"),
+    ("OZU_MCP_OAUTH_REGISTRATION", "yes"), ("OZU_MCP_STATIC_BEARER_REMOTE", "true"),
+    ("OZU_MCP_GRANT_HOOK", '"unclosed')])
 def test_malformed_oauth_settings_refuse_to_start(monkeypatch, tmp_path, key, value):
     msg = _main_with(monkeypatch, tmp_path, **{**OAUTH_ENV, key: value})
     assert key in msg and GH_SECRET not in msg
@@ -550,3 +577,362 @@ def test_oauth_off_adds_no_route(env, monkeypatch):
         # An OAuth-minted token means nothing to the bearer-only server.
         assert c.post("/mcp", json={}, headers={
             "Authorization": "Bearer ozua_anything"}).status_code == 401
+
+
+# ------------------------------------------------- security review, 2026-11-14
+
+def _asgi(app, method, path, chunks=(), headers=()):
+    """Drive the ASGI app by hand, counting how much of the body it read."""
+    import asyncio
+    sent, read = [], [0]
+    pending = list(chunks)
+
+    async def receive():
+        if not pending:
+            return {"type": "http.request", "body": b"", "more_body": False}
+        read[0] += 1
+        body = pending.pop(0)
+        return {"type": "http.request", "body": body, "more_body": bool(pending)}
+
+    async def send(msg):
+        sent.append(msg)
+
+    scope = {"type": "http", "method": method, "path": path, "raw_path": path.encode(),
+             "query_string": b"", "scheme": "http", "server": ("127.0.0.1", 8399),
+             "client": ("127.0.0.1", 5), "http_version": "1.1", "root_path": "",
+             "headers": [(b"host", b"127.0.0.1:8399"), *headers]}
+    asyncio.run(app(scope, receive, send))
+    return next(m["status"] for m in sent if m["type"] == "http.response.start"), read[0]
+
+
+@pytest.mark.parametrize("method,path", [("POST", "/oauth/consent"), ("GET", "/oauth/start"),
+                                         ("GET", "/oauth/github/callback")])
+def test_added_routes_stop_reading_an_oversized_body(tmp_path, monkeypatch, method, path):
+    """Finding 1: one unauthenticated 300 MB form went into memory whole."""
+    e = make_env(tmp_path, monkeypatch)
+    chunk = b"a" * 4096
+    status, read = _asgi(e.app, method, path, [chunk] * 1000, headers=[
+        (b"content-type", b"application/x-www-form-urlencoded")])
+    assert status == 413
+    assert read <= e.mod.MAX_BODY // len(chunk) + 1   # stopped at the cap, not at 4 MB
+    status, read = _asgi(e.app, method, path, [chunk], headers=[
+        (b"content-type", b"application/x-www-form-urlencoded"),
+        (b"content-length", b"300000000")])
+    assert status == 413 and read == 0                # refused on the declared size alone
+
+
+def test_an_unclassified_tool_refuses_start_and_is_unreachable(tmp_path, monkeypatch):
+    """Finding 2: deny by default, on the registered name."""
+    e = make_env(tmp_path, monkeypatch)
+    e.srv.check_tools_classified(e.server)            # the built-ins are all classified
+
+    @e.server.tool(name="sneaky")
+    def sneaky() -> str:
+        return "should not be served"
+    with pytest.raises(SystemExit) as exc:
+        e.srv.check_tools_classified(e.server)
+    assert "sneaky" in str(exc.value) and "register_tool" in str(exc.value)
+    # Even if it were served, the call gate refuses it to an OAuth session.
+    with TestClient(e.app, base_url=PUBLIC) as c:
+        e.c = c
+        _, tok = grant(e)
+        at = tok["access_token"]
+        sid = session(c, at)
+        assert "sneaky" not in tool_names(c, at, sid)
+        assert call(c, at, sid, "sneaky")["isError"]
+        assert "should not be served" in json.dumps(call(c, STATIC, session(c, STATIC), "sneaky"))
+
+
+def test_register_tool_is_the_way_in_for_other_modules(tmp_path, monkeypatch):
+    e = make_env(tmp_path, monkeypatch)
+
+    def semantic_search(query: str) -> str:
+        return f"read {query}"
+
+    def note_writer(text: str) -> str:
+        return "wrote"
+    e.srv.register_tool(e.server, semantic_search, access="read")
+    e.srv.register_tool(e.server, note_writer, access="write", name="add_note")
+    e.srv.check_tools_classified(e.server)
+    with pytest.raises(ValueError):
+        e.srv.register_tool(e.server, note_writer, access="admin")
+    with TestClient(e.app, base_url=PUBLIC) as c:
+        e.c = c
+        _, tok = grant(e)
+        at = tok["access_token"]
+        sid = session(c, at)
+        assert "read x" in json.dumps(call(c, at, sid, "semantic_search", query="x"))
+        assert call(c, at, sid, "add_note", text="t")["isError"]
+        assert "wrote" in json.dumps(call(c, STATIC, session(c, STATIC), "add_note", text="t"))
+
+
+def test_registration_is_closed_by_default(closed):
+    """Finding 3b: no registration endpoint unless deliberately opened."""
+    asm = closed.c.get("/.well-known/oauth-authorization-server").json()
+    assert "registration_endpoint" not in asm
+    assert asm["authorization_response_iss_parameter_supported"] is True
+    assert register(closed.c).status_code == 404
+    # A timed window from the CLI opens it, and it closes by itself.
+    assert closed.mod.cli(["registration", "open", "5"], closed.cfg) == 0
+    assert closed.c.get("/.well-known/oauth-authorization-server").json()[
+        "registration_endpoint"] == PUBLIC + "/register"
+    assert register(closed.c).status_code == 201
+    closed.clock.t += 5 * 60 + 1
+    assert register(closed.c).status_code == 404
+    assert closed.mod.cli(["registration", "open", "999"], closed.cfg) == 0  # capped at 60 min
+    closed.clock.t += 61 * 60
+    assert register(closed.c).status_code == 404
+
+
+def _static_client(e, method="post"):
+    import contextlib
+    import io
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        assert e.mod.cli(["client", "create", "--name", "Claude", "--auth", method], e.cfg) == 0
+    text = out.getvalue()
+    return (re.search(r"client id:\s+(\S+)", text).group(1),
+            re.search(r"client secret:\s+(\S+)", text).group(1))
+
+
+def _static_code(e, cid):
+    state = to_github(e, cid)
+    page = e.c.get("/oauth/github/callback?" + urlencode({"code": "c", "state": state}))
+    assert page.status_code == 200
+    assert "If you did not just press Connect in Claude yourself, press Deny." in page.text
+    return parse_qs(urlparse(approve(e, page).headers["location"]).query)["code"][0]
+
+
+def test_a_preregistered_client_needs_its_secret(closed):
+    """Finding 3a/3c: the code of a confidential client is worthless without
+    the secret, so a phished approval of someone else's link yields nothing."""
+    cid, secret = _static_client(closed)
+    code = _static_code(closed, cid)
+    form = {"grant_type": "authorization_code", "code": code, "redirect_uri": REDIRECT,
+            "client_id": cid, "code_verifier": VERIFIER}
+    assert closed.c.post("/token", data=form).status_code == 401
+    assert closed.c.post("/token", data={**form, "client_secret": "wrong"}).status_code == 401
+    r = closed.c.post("/token", data={**form, "client_secret": secret})
+    assert r.status_code == 200 and r.json()["scope"] == "vault:read"
+    # Refresh needs it too.
+    rt = r.json()["refresh_token"]
+    assert refresh(closed.c, cid, rt).status_code == 401
+    assert closed.c.post("/token", data={"grant_type": "refresh_token", "refresh_token": rt,
+                                         "client_id": cid, "client_secret": secret}
+                         ).status_code == 200
+
+
+def test_basic_auth_client_and_client_cli(closed, capsys):
+    cid, secret = _static_client(closed, "basic")
+    code = _static_code(closed, cid)
+    r = closed.c.post("/token", auth=(cid, secret), data={
+        "grant_type": "authorization_code", "code": code, "redirect_uri": REDIRECT,
+        "client_id": cid, "code_verifier": VERIFIER})
+    assert r.status_code == 200
+    capsys.readouterr()
+    assert closed.mod.cli(["client", "list"], closed.cfg) == 0
+    out = capsys.readouterr().out
+    assert cid in out and "static" in out and secret not in out
+    assert closed.mod.cli(["client", "revoke", cid], closed.cfg) == 0
+    assert closed.c.post("/mcp", json={}, headers={
+        "Authorization": "Bearer " + r.json()["access_token"]}).status_code == 401
+
+
+def test_grant_hook_gets_facts_never_secrets_and_never_blocks(tmp_path, monkeypatch):
+    """Finding 3e."""
+    out = tmp_path / "hook.json"
+    script = ("import json,os,sys;json.dump({k:v for k,v in os.environ.items()},"
+              "open(sys.argv[1],'w'))")
+    e = make_env(tmp_path, monkeypatch, grant_hook=[sys.executable, "-c", script, str(out)])
+    monkeypatch.setenv("SOME_SECRET_IN_THE_SERVER_ENV", "do-not-pass")
+    with TestClient(e.app, base_url=PUBLIC) as c:
+        e.c = c
+        monkeypatch.chdir(tmp_path)
+        cid, tok = grant(e, name="Claude $(touch pwned)\n`touch pwned2`")  # attacker text
+
+    for _ in range(100):
+        if out.exists() and out.stat().st_size:
+            break
+        time.sleep(0.05)
+    env_seen = json.loads(out.read_text())
+    assert env_seen["OZU_GRANT_EVENT"] == "new_grant" and env_seen["OZU_GRANT_CLIENT_ID"] == cid
+    assert env_seen["OZU_GRANT_CLIENT_NAME"] == "Claude $(touch pwned) `touch pwned2`"
+    assert "SOME_SECRET_IN_THE_SERVER_ENV" not in env_seen
+    assert not any(tok["access_token"] in v or GH_SECRET in v or STATIC in v
+                   for v in env_seen.values())
+    assert not (tmp_path / "pwned").exists() and not (tmp_path / "pwned2").exists()
+
+
+@pytest.mark.parametrize("hook", [["/nonexistent/hook"], [sys.executable, "-c", "import sys; sys.exit(3)"],
+                                  [sys.executable, "-c", "import time; time.sleep(30)"]])
+def test_a_failing_or_slow_hook_does_not_touch_the_grant(tmp_path, monkeypatch, hook):
+    e = make_env(tmp_path, monkeypatch, grant_hook=hook)
+    monkeypatch.setattr(e.mod, "HOOK_TIMEOUT", 1)
+    with TestClient(e.app, base_url=PUBLIC) as c:
+        e.c = c
+        t0 = time.time()
+        grant(e)
+        assert time.time() - t0 < 5
+
+
+def test_pending_limits_refuse_cleanly_and_spare_a_trusted_client(env, monkeypatch):
+    """Finding 4 (the refusal was a FrozenInstanceError -> server_error) and 5."""
+    cid = register(env.c).json()["client_id"]
+    for _ in range(env.mod.MAX_PENDING_PER_CLIENT):
+        assert authorize(env.c, cid).status_code == 302
+    r = authorize(env.c, cid)
+    q = parse_qs(urlparse(r.headers["location"]).query)
+    assert q["error"] == ["temporarily_unavailable"] and q["state"] == ["client-st"]
+    # Global cap: fresh clients are blocked, a client that already got a token is not.
+    monkeypatch.setattr(env.mod, "MAX_PENDING", 4)
+    env.clock.t += env.mod.PENDING_TTL + 1
+    owner, _ = grant(env)
+    flood = [register(env.c).json()["client_id"] for _ in range(2)]
+    for f in flood:
+        for _ in range(2):
+            authorize(env.c, f)
+    fresh = register(env.c).json()["client_id"]
+    r = authorize(env.c, fresh)
+    assert parse_qs(urlparse(r.headers["location"]).query)["error"] == ["temporarily_unavailable"]
+    assert urlparse(authorize(env.c, owner).headers["location"]).path == "/oauth/start"
+
+
+def test_static_bearer_is_refused_through_the_proxy(env):
+    """Finding 6, both directions."""
+    xff = {"X-Forwarded-For": "203.0.113.9"}
+    r = env.c.post("/mcp", json={}, headers={"Authorization": f"Bearer {STATIC}", **xff})
+    assert r.status_code == 401 and "not accepted through the proxy" in r.text
+    r = env.c.post("/mcp", json={}, headers={"Authorization": f"Bearer {STATIC}",
+                                             "Forwarded": "for=203.0.113.9"})
+    assert r.status_code == 401
+    assert session(env.c, STATIC)                       # loopback, no forwarding header
+    _, tok = grant(env)
+    r = rpc(env.c, tok["access_token"], "initialize", {
+        "protocolVersion": "2025-06-18", "capabilities": {},
+        "clientInfo": {"name": "t", "version": "0"}})
+    assert r.status_code == 200                         # OAuth tokens are meant for the proxy
+
+
+def test_static_bearer_through_the_proxy_can_be_allowed(tmp_path, monkeypatch):
+    e = make_env(tmp_path, monkeypatch, static_remote=True)
+    with TestClient(e.app, base_url=PUBLIC) as c:
+        r = c.post("/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+            "protocolVersion": "2025-06-18", "capabilities": {},
+            "clientInfo": {"name": "t", "version": "0"}}}, headers={
+            "Authorization": f"Bearer {STATIC}", "X-Forwarded-For": "203.0.113.9",
+            "Accept": "application/json, text/event-stream"})
+        assert r.status_code == 200
+
+
+def test_oauth_off_ignores_forwarding_headers(env):
+    srv = env.srv
+    app = srv.build_server(STATIC).streamable_http_app(
+        transport_security=srv.transport_security())
+    with TestClient(app, base_url=PUBLIC) as c:
+        r = c.post("/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+            "protocolVersion": "2025-06-18", "capabilities": {},
+            "clientInfo": {"name": "t", "version": "0"}}}, headers={
+            "Authorization": f"Bearer {STATIC}", "X-Forwarded-For": "203.0.113.9",
+            "Accept": "application/json, text/event-stream"})
+        assert r.status_code == 200
+
+
+def _parallel(app, requests):
+    import asyncio
+
+    async def go():
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url=PUBLIC) as c:
+            return await asyncio.gather(*(c.post("/token", data=d) for d in requests))
+    return asyncio.run(go())
+
+
+def test_parallel_code_redemption_yields_one_grant(env):
+    cid, code = get_code(env)
+    form = {"grant_type": "authorization_code", "code": code, "redirect_uri": REDIRECT,
+            "client_id": cid, "code_verifier": VERIFIER}
+    rs = _parallel(env.app, [form] * 16)
+    assert sorted(r.status_code for r in rs).count(200) == 1
+
+
+def test_parallel_refresh_keeps_the_grant(env):
+    """Finding 7: sixteen refreshes in flight at once used to revoke the grant."""
+    cid, tok = grant(env)
+    rs = _parallel(env.app, [{"grant_type": "refresh_token", "client_id": cid,
+                              "refresh_token": tok["refresh_token"]}] * 16)
+    assert {r.status_code for r in rs} == {200}
+    pairs = {(r.json()["access_token"], r.json()["refresh_token"]) for r in rs}
+    assert len(pairs) == 1
+    at = pairs.pop()[0]
+    assert env.c.post("/mcp", json={}, headers={"Authorization": f"Bearer {at}"}
+                      ).status_code != 401
+    # Another client presenting it inside the window gets nothing.
+    other = register(env.c).json()["client_id"]
+    assert refresh(env.c, other, tok["refresh_token"]).status_code == 400
+
+
+def test_loopback_redirects_are_opt_in(tmp_path, monkeypatch):
+    e = make_env(tmp_path, monkeypatch, allow_loopback=True)
+    with TestClient(e.app, base_url=PUBLIC) as c:
+        e.c = c
+        for uri in ("http://127.0.0.1:9999/cb", "http://localhost:3118/callback"):
+            r = register(c, uris=[uri])
+            assert r.status_code == 201, uri
+        assert register(c, uris=["http://192.168.1.5:9999/cb"]).status_code == 400
+        cid = register(c, uris=["http://127.0.0.1:9999/cb"]).json()["client_id"]
+        r = authorize(c, cid, redirect="http://127.0.0.1:9999/cb")
+        start = urlparse(r.headers["location"])
+        r = c.get(start.path + "?" + start.query, follow_redirects=False)
+        q = parse_qs(urlparse(r.headers["location"]).query, keep_blank_values=True)
+        e.gh.challenge = q["code_challenge"][0]
+        page = c.get("/oauth/github/callback?" + urlencode({"code": "x", "state": q["state"][0]}))
+        assert "a program on your own computer" in page.text
+
+
+def test_prune_forgets_dead_rows_and_clients(env):
+    cid, tok = grant(env)
+    env.c.post("/revoke", data={"token": tok["access_token"], "client_id": cid,
+                                "client_secret": ""})
+    env.clock.t += 31 * 86400
+    register(env.c)     # any write prunes
+    from ozu.mcp_oauth import connect
+    con = connect(env.provider.s.db_path)
+    assert con.execute("SELECT COUNT(*) FROM tokens").fetchone()[0] == 0
+    assert con.execute("SELECT COUNT(*) FROM families").fetchone()[0] == 0
+    assert con.execute("SELECT COUNT(*) FROM codes").fetchone()[0] == 0
+    assert con.execute("SELECT COUNT(*) FROM clients WHERE client_id=?", (cid,)).fetchone()[0] == 0
+
+
+def test_main_starts_the_edge_with_the_log_filter(monkeypatch, tmp_path):
+    """The real start-up path, short of binding a port."""
+    import uvicorn
+    from ozu import mcp_oauth, mcp_server
+    seen = {}
+    monkeypatch.setattr(uvicorn, "run", lambda app, **kw: seen.update(app=app, **kw))
+    logging.getLogger("uvicorn.access").filters[:] = []
+    monkeypatch.setenv("OZU_HOME", str(tmp_path / "home"))
+    for k, v in {**OAUTH_ENV, "OZU_MCP_PUBLIC_URL": "http://127.0.0.1:8399"}.items():
+        monkeypatch.setenv(k, v)
+    monkeypatch.setattr(sys, "argv", ["ozu", "--http"])
+    import ozu.config as config
+    config._config = None
+    try:
+        mcp_server.main()
+    finally:
+        config._config = None
+    assert isinstance(seen["app"], mcp_oauth.OAuthEdge)
+    assert seen["host"] == "127.0.0.1" and seen["port"] == 8321
+    assert any(isinstance(f, mcp_oauth.RedactQuery)
+               for f in logging.getLogger("uvicorn.access").filters)
+    assert (tmp_path / "home" / "mcp-oauth.db").exists()
+    # A tool registered past register_tool stops the start.
+    real = mcp_server.build_server
+
+    def with_a_loose_tool(*a, **k):
+        server = real(*a, **k)
+        server.tool(name="loose")(lambda: "x")
+        return server
+    monkeypatch.setattr(mcp_server, "build_server", with_a_loose_tool)
+    msg = _main_with(monkeypatch, tmp_path, **{**OAUTH_ENV,
+                                               "OZU_MCP_PUBLIC_URL": "http://127.0.0.1:8399"})
+    assert "loose" in msg

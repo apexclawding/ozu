@@ -81,7 +81,8 @@ From the `mcp` 2.3.0 source:
    |  POST /mcp (no token)  |                                  |
    |<-- 401 + resource_metadata                                |
    |  GET PRM, AS metadata  |                                  |
-   |  POST /register ------>|  (grants nothing)                |
+   |  (client id + secret pre-registered with `ozu mcp client create`;   |
+   |   or POST /register while registration is open: grants nothing)       |
    |  browser: /authorize?client_id,redirect_uri,               |
    |     code_challenge(S256),state,scope,resource              |
    |----------------------->|  checks -> pending authorization  |
@@ -109,8 +110,13 @@ the GitHub token, and deletes it at GitHub right after the identity check
 ## Endpoints in OAuth mode
 
 All are served by the one process on loopback and reach the internet only
-through the reverse proxy. Every response from the routes Ozu adds carries
-`Cache-Control: no-store`; the HTML pages also carry
+through the reverse proxy. In OAuth mode the process serves an outer layer,
+`OAuthEdge`, in front of the SDK's app (it serves the AS metadata, gates
+`/register` and fences the static bearer, below). Every route Ozu adds has
+the SDK's own body cap in front of it (16 KB, `MAX_BODY`), which refuses on
+a declared `Content-Length` before reading and stops reading a streamed body
+at the cap; the SDK caps its own routes (4 MB). Every response from the
+routes Ozu adds carries `Cache-Control: no-store`; the HTML pages also carry
 `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer` and a CSP with
 `default-src 'none'; frame-ancestors 'none'` and `form-action` limited to
 this origin plus the one redirect origin of that authorization.
@@ -118,20 +124,46 @@ this origin plus the one redirect origin of that authorization.
 | Path | Auth | Returns | On failure |
 |---|---|---|---|
 | `GET /.well-known/oauth-protected-resource/mcp` | none | PRM: `resource` = `<public>/mcp`, `authorization_servers` = [`<public>`], `scopes_supported` = [`vault:read`] | n/a |
-| `GET /.well-known/oauth-authorization-server` | none | RFC 8414 metadata (SDK): S256 only, `registration_endpoint`, `revocation_endpoint` | n/a |
-| `POST /register` | none | 201 client info (SDK) | 400 `invalid_redirect_uri` (not on the allowlist), 400 `invalid_client_metadata` (too many URIs, name too long, scope other than `vault:read`, registration limit reached) |
+| `GET /.well-known/oauth-authorization-server` | none | RFC 8414 metadata (built by the SDK's builder, served by `OAuthEdge`, `no-store`): S256 only, `revocation_endpoint`, `authorization_response_iss_parameter_supported: true`; `registration_endpoint` **only while registration is open** | n/a |
+| `POST /register` | none | 201 client info (SDK), only while registration is open | **404 while closed (the default)**; 400 `invalid_redirect_uri` (not on the allowlist), 400 `invalid_client_metadata` (too many URIs, name too long, scope other than `vault:read`, limit reached, closed) |
 | `GET/POST /authorize` | none | 302 to `/oauth/start?txn=...` | 400 JSON for unknown client / redirect not registered (never redirects); otherwise a redirect to the client with `invalid_scope`, `invalid_target` (resource is not this server), `temporarily_unavailable` (too many pending authorizations) |
-| `GET /oauth/start?txn=` | none | sets the binding cookie, 302 to GitHub | 400 page "unknown or expired authorization" |
-| `GET /oauth/github/callback` | none | consent page (200) | 400 page for a missing/unknown/expired `state` or a missing cookie; 403 page "this GitHub account may not approve access" (pending deleted); 502 page "GitHub could not be reached; nothing was granted" (pending deleted); GitHub's own `error=` is answered with a 400 page and the client gets nothing |
-| `POST /oauth/consent` | cookie + consent token | approve: 303 to `redirect_uri?code&state&iss`; deny: 303 to `redirect_uri?error=access_denied&state&iss` | 400 page on anything missing, expired or not matching; nothing is issued |
-| `POST /token` | client auth per registration (SDK) | 200 `{access_token, refresh_token, expires_in, scope}` | 400 `invalid_grant` (unknown, expired, replayed, wrong verifier, revoked), 400 `invalid_request` (redirect mismatch), 401 `invalid_client` |
+| `GET /oauth/start?txn=` | none | sets the binding cookie, 302 to GitHub | 400 page "unknown or expired authorization"; 413 body too large |
+| `GET /oauth/github/callback` | none | consent page (200) | 400 page for a missing/unknown/expired `state` or a missing cookie; 403 page "this GitHub account may not approve access" (pending deleted); 502 page "GitHub could not be reached; nothing was granted" (pending deleted); GitHub's own `error=` is answered with a 400 page and the client gets nothing; 413 |
+| `POST /oauth/consent` | cookie + consent token | approve: 303 to `redirect_uri?code&state&iss`; deny: 303 to `redirect_uri?error=access_denied&state&iss` | 400 page on anything missing, expired or not matching; 413; nothing is issued |
+| `POST /token` | client auth per registration (SDK): the secret for a pre-registered client | 200 `{access_token, refresh_token, expires_in, scope}` | 400 `invalid_grant` (unknown, expired, replayed, wrong verifier, revoked), 400 `invalid_request` (redirect mismatch), 401 `invalid_client` (missing or wrong secret) |
 | `POST /revoke` | client auth (SDK) | 200 always (RFC 7009) | 401 for a bad client |
-| `POST/GET/DELETE /mcp` | Bearer | MCP | 401 + `WWW-Authenticate` with `resource_metadata`; 403 `insufficient_scope` |
+| `POST/GET/DELETE /mcp` | Bearer | MCP | 401 + `WWW-Authenticate` with `resource_metadata`; 401 for the static bearer on a proxied request; 403 `insufficient_scope` |
 
 No error body or page ever carries a token, a code, a client secret, the
 GitHub app secret or a GitHub response body.
 
 ## Decisions
+
+**Default posture: one pre-registered confidential client, registration
+closed.** The consent-phishing finding of the security review (below, under
+*Threat model*) is that with open registration an attacker can add a
+connector in *their own* claude.ai account, copy the authorize link it
+produces and send it to the owner; the owner's approval then delivers a code
+to claude.ai's callback carrying the attacker's `state`, and whether
+claude.ai completes that flow for the attacker is outside this server's
+knowledge. So the default client is created by the owner:
+`ozu mcp client create [--name NAME] [--auth post|basic]` prints a client id
+and secret **once**; they go into the connector's settings in claude.ai.
+That client is confidential: its codes and refresh tokens are worthless
+without the secret (the SDK authenticates it at `/token`), so a phished
+approval of a link built on this client id yields nothing to anyone who
+lacks the secret. Dynamic registration is off
+(`OZU_MCP_OAUTH_REGISTRATION=0`): the metadata advertises no
+`registration_endpoint` and `/register` answers 404. It can be opened
+deliberately: always (`OZU_MCP_OAUTH_REGISTRATION=1`), or for a window that
+closes by itself, `ozu mcp registration open [MINUTES]` (default 10, at most
+60; `close` and `status` too).
+
+The client secret is **stored as issued**, in the 0600 state file: the SDK's
+client authenticator compares the stored value with `hmac.compare_digest`,
+and `get_client()` never sees the request, so a hash cannot satisfy it. The
+secret alone grants nothing: every code still needs the pinned owner's
+GitHub sign-in and consent, and PKCE.
 
 **Opaque tokens, stored hashed, in SQLite — not JWTs.** One user, one box:
 nothing needs to verify a token without asking this process, and revocation
@@ -139,18 +171,21 @@ has to be instant and certain. Every code, access token and refresh token is
 `secrets.token_urlsafe(32)` (256 bits) with a short prefix (`ozua_`, `ozur_`,
 `ozuc_`) so a leaked one is recognisable by secret scanners; only its
 SHA-256 is stored. A stolen copy of the state file therefore yields no usable
-token. The file is `<OZU_HOME>/mcp-oauth.db`, created `0600`, separate from
-`ozu.db` (which is a rebuildable index and must stay so). No signing key
-exists, so there is none to leak or rotate. Exception: DCR client secrets
-are stored as issued, because the SDK's client authenticator compares the
-stored value; claude.ai registers as a public client and gets none, and a
-client secret alone grants nothing without a code and its PKCE verifier.
+token (client secrets aside, above). The file is `<OZU_HOME>/mcp-oauth.db`,
+created `0600`, separate from `ozu.db` (which is a rebuildable index and must
+stay so). No signing key exists, so there is none to leak or rotate. Rows
+that can no longer be used are pruned on every authorization, registration
+and grant: pending authorizations at expiry, codes an hour after expiry
+(replay detection), tokens at expiry or with their grant, revoked or ended
+grants after 30 days (the CLI lists them until then), and dynamically
+registered clients with no live grant left.
 
 **No new dependency.** The SDK supplies the OAuth endpoints; the HTTP
 client the SDK itself depends on (`httpx2` from mcp 2.x, an API-compatible
-continuation of `httpx`; `httpx` if that is what is installed) talks to GitHub; `sqlite3`, `secrets`, `hashlib` and
-`html` do the rest. OAuth mode needs the SDK 2.x provider API (it checks for
-it and refuses to start otherwise); the static bearer still works on 1.x.
+continuation of `httpx`; `httpx` if that is what is installed) talks to
+GitHub; `sqlite3`, `secrets`, `hashlib`, `html`, `shlex` and `subprocess`
+do the rest. OAuth mode needs the SDK 2.x provider API (it checks for it and
+refuses to start otherwise); the static bearer still works on 1.x.
 
 **Lifetimes.** Pending authorization (from `/authorize` to consent): 10 min.
 Authorization code: 120 s, single use. Access token: 1 h. Refresh token:
@@ -160,12 +195,18 @@ refreshes, so the owner signs in with GitHub again at least quarterly.
 
 **Replay and reuse.** A code presented twice revokes the whole family it
 produced (RFC 6749 §4.1.2). A refresh token presented after it was rotated
-revokes the whole family (OAuth 2.1 refresh-token reuse detection): either
-the client or a thief holds a stale token, and the safe answer is to make
-both sign in again. Cost: two concurrent refreshes by the same client also
-kill the family; the client then re-authorizes.
+revokes the whole family (OAuth 2.1 refresh-token reuse detection), with one
+exception: the **same client** presenting the **same** just-rotated token
+again within `REFRESH_GRACE` (5 s) gets the **same** new pair back (a client
+with two requests in flight; the review proved sixteen parallel refreshes
+revoked the grant). The pair is held in process memory only, never on disk,
+and is dropped on any revocation. That is the whole weakening: inside those
+5 s, a thief who holds the old token *and* the client id receives the pair
+the legitimate client also holds instead of triggering the revocation; after
+them, reuse revokes as before. Another client id inside the window gets
+`invalid_grant` and revokes nothing.
 
-**DCR policy: registration grants nothing.** Anyone can register, so a
+**Dynamic registration, when open: registration grants nothing.** A
 registered client is just a name and a redirect list. It can obtain a code
 only through a consent that the pinned GitHub account approves in a browser.
 On top of that:
@@ -174,17 +215,26 @@ On top of that:
   `OZU_MCP_OAUTH_REDIRECT_URIS` (default: the two claude.ai/claude.com
   callbacks); loopback `http://127.0.0.1|localhost|[::1]:<port>/...` only
   with `OZU_MCP_OAUTH_ALLOW_LOOPBACK=1` (Claude Code). The allowlist is
-  checked at registration and again at `/authorize`. This is what closes the
-  open-redirect and most of the consent-phishing surface: a code can only be
-  delivered to Claude (or to the owner's own machine).
+  checked at registration and again at `/authorize`, and a client whose
+  redirects are no longer all allowed is treated as unknown. This closes the
+  open redirect: a code can only be delivered to Claude (or to the owner's
+  own machine).
 - at most 4 redirect URIs, 512 characters each, client name 100 characters;
   the SDK caps the request body.
 - a client never used to obtain a token is forgotten 1 hour after it
   registered; at most 10 registrations per hour and 50 live clients in all
   (global counters: there is one user, and the proxy's client IP is not
-  trusted). A flood can therefore block a new registration for an hour, and
-  nothing more.
+  trusted). While registration is open, a flood can therefore keep a *new*
+  client from registering for as long as the flood goes on (each hour it
+  refills the ten slots); a client that already has a token is unaffected,
+  and with registration closed (the default) there is nothing to flood.
 - scope is `vault:read` and nothing else.
+
+**Pending authorizations are capped per client and globally.** Every client
+may have at most 3 pending authorizations per 10 minutes; all clients that
+have *never* obtained a token share a cap of 30. A client that has (and
+every pre-registered client) is exempt from the shared cap, so a flood of
+fresh clients cannot lock the owner's own connector out of signing in.
 
 Client ID Metadata Documents are not supported in v1: they make the server
 fetch an arbitrary URL (SSRF on a box that serves other loopback services),
@@ -197,31 +247,70 @@ accepts the GitHub user only if its numeric `id` equals
 login can be taken by someone else. Requiring both means a rename stops
 OAuth (fail closed) instead of silently following the account.
 
-**Scopes and what an OAuth token may call.** Two scopes exist:
+**Scopes and what an OAuth token may call: deny by default.** Two scopes
+exist:
 
-- `ozu` — the static bearer's scope, all tools including `capture`. It is
+- `ozu` — the static bearer's scope, every tool including `capture`. It is
   never issued over OAuth (registration and `/authorize` accept only
   `vault:read`).
-- `vault:read` — `search_notes`, `get_note`, `graph_neighbors`, `timeline`,
-  `open_actions`. `capture` writes to the vault and is refused.
+- `vault:read` — only tools registered with access `"read"`:
+  `search_notes`, `get_note`, `graph_neighbors`, `timeline`, `open_actions`
+  (`mcp_server.READ_TOOLS`). Anything else, `capture` included, is refused.
 
-Enforcement is at **call time, server side**: every tool is wrapped when it
-is registered, and the wrapper checks the scopes of the request's access
-token (from the SDK's auth context) before the tool body runs. `capture`
-requires `ozu`; the read tools require `vault:read` or `ozu`. If the server
-was built with auth and a call somehow arrives without a token, the wrapper
-refuses (fail closed). `tools/list` also hides `capture` from an OAuth
-session, but that is cosmetic; the wrapper is the control. A refused call is
-a tool error ("requires scope ozu"), not an HTTP 403, because the MCP session
-is already authorized for its read tools. In OAuth mode `required_scopes` is
+Each tool's access class is recorded under the name it is **registered**
+as, by `mcp_server.register_tool(server, fn, access="read"|"write",
+name=None)`. A tool missing from `READ_TOOLS` is classed `"write"`. Three
+layers check it, all keyed on the called name and all denying by default:
+
+1. the wrapper `register_tool` puts around the tool (refuses before the body
+   runs; also refuses a call with no token when auth is on);
+2. in OAuth mode, a gate on `tools/call` that refuses any name not classed
+   `"read"` before the SDK even looks the tool up, so a tool that skipped
+   `register_tool` is not reachable over OAuth either;
+3. at start-up in OAuth mode, `check_tools_classified()` refuses to start if
+   any registered tool has no class, naming it.
+
+`tools/list` hides what a session may not call; that is cosmetic. A refused
+call is a tool error, not an HTTP 403, because the MCP session is already
+authorized for its read tools. In OAuth mode `required_scopes` is
 `vault:read`, and the static bearer carries both `ozu` and `vault:read`, so
 it passes the same middleware and keeps its full tool set.
+
+**Adding a tool from another module.** A module that registers tools from
+a `register(server, ...)` hook calls
+`mcp_server.register_tool(server, fn, access="read")` (or `"write"`) instead
+of `server.tool()`. With a bare `server.tool()` the server still starts and
+serves the tool when OAuth is off (unchanged), and refuses to start in OAuth
+mode, naming the tool: never silently open, never silently fatal.
 
 **The wall is untouched.** OAuth adds no tool and no path into the data: an
 OAuth call runs the very same tool bodies after the scope check, so
 `_vault_ok` and `_label_served` apply exactly as over the bearer. (The
 `OZU_ALLOW_WORK_MCP` opt-in therefore applies to OAuth sessions too, exactly
-as to the bearer; leave it off.)
+as to the bearer; confirm it is unset before opening the endpoint.)
+
+**The static bearer is for loopback in OAuth mode.** It never expires and
+carries every tool, so `OAuthEdge` refuses it (401) on any request that
+carries `X-Forwarded-For` or `Forwarded`, i.e. one that came through the
+reverse proxy, unless `OZU_MCP_STATIC_BEARER_REMOTE=1`. This relies on the
+proxy **always** setting `X-Forwarded-For`: a client can add the header but
+cannot remove one the proxy sets. Caddy sets it by default, and
+`deploy/caddy-mcp.conf` spells it out. A proxy configured not to set it would
+turn this check off silently. OAuth tokens are unaffected, and with OAuth off
+nothing changes.
+
+**Grant notification hook.** `OZU_MCP_GRANT_HOOK` is a command line, split
+with `shlex` once at start-up and run **without a shell** on every new grant
+(not on refreshes), in a background thread: it can neither block nor fail
+the grant (a missing command, a non-zero exit or a run past 10 s is killed
+and logged). Its environment is only `PATH`, `HOME`, `LANG`, `LC_ALL`, `TZ`
+plus non-secret facts: `OZU_GRANT_EVENT=new_grant`, `OZU_GRANT_ID` (grant
+id), `OZU_GRANT_CLIENT_ID`, `OZU_GRANT_CLIENT_NAME`, `OZU_GRANT_TIME`. The
+client name is client-supplied text: it is passed as an environment value
+(control characters replaced, 200 characters), never interpolated into a
+command line, but a hook script must still treat it as data (quote it).
+Nothing in the hook's environment grants anything: no token, no secret, not
+the server's environment.
 
 **Audience.** Tokens are issued for `<public>/mcp`. A `resource` on the
 authorization request must be that URL or `<public>` itself (trailing slash
@@ -238,18 +327,21 @@ cookie of the browser that started the flow, and the consent POST needs the
 cookie, the flow's `state` and a one-time consent token embedded in the page
 (the pending row is deleted as the POST is accepted, so a consent cannot be
 replayed). Only hashes of these values are stored; the PKCE verifier sent to
-GitHub is kept as is until the callback, then cleared.
+GitHub is kept as is until the callback, then cleared. The consent page says,
+in bold: "If you did not just press Connect in Claude yourself, press Deny."
 
 **Mix-up.** There is one authorization server, it names itself as `issuer`,
-and the final redirect carries `iss=<public>` (RFC 9207).
+the final redirect carries `iss=<public>` (RFC 9207), and the metadata says
+`authorization_response_iss_parameter_supported: true`.
 
 **Logs.** One audit line per event, never a value that grants anything:
-registered client (id, name, redirect hosts); GitHub identity accepted or
-refused (GitHub id and login); consent approved or denied; grant issued (family id, client id, client
-name, scope, expiry); refreshed; revoked; replay or reuse detected. uvicorn's
-access log would print query strings (the GitHub `code`, `state`, the
-`txn`), so in OAuth mode a filter replaces every query string in it with
-`?…`.
+registered or pre-registered client (id, name, redirect hosts); GitHub
+identity accepted or refused (GitHub id and login); consent approved or
+denied; grant issued (family id, client id, client name, scope, expiry);
+refreshed; revoked; replay or reuse detected; registration opened; static
+bearer refused through the proxy; grant hook failures. uvicorn's access log
+would print query strings (the GitHub `code`, `state`, the `txn`), so in
+OAuth mode a filter replaces every query string in it with `?…`.
 
 **GitHub down.** Any failure talking to GitHub (connection, timeout, non-200,
 a body without an integer `id`) ends that authorization with a 502 page and
@@ -260,40 +352,55 @@ do not depend on GitHub); a refresh does not call GitHub either.
 
 - The SDK's `TokenError`, `AuthorizeError` and `RegistrationError` are frozen
   dataclasses; `contextlib` cannot re-raise them through a `with` block (it
-  assigns `__traceback__`). Every raise in the provider is therefore outside
-  its database transaction.
+  assigns `__traceback__`, which ends in `FrozenInstanceError` and a
+  `server_error`). Every raise in the provider is therefore outside its
+  database transaction; the pending-limit refusal in `authorize()` was the
+  one that was not, and has a test now.
+- Routes added with `custom_route()` get no body limit from the SDK (its own
+  routes are wrapped in `RequestBodyLimitMiddleware`); ours are wrapped in
+  the same middleware.
+- The SDK's metadata builder never sets
+  `authorization_response_iss_parameter_supported` and caches the document
+  for an hour; `OAuthEdge` serves it instead, built by the same builder.
 - `/revoke`'s request model declares `client_secret` without a default, so a
   public client must send the field, empty, or get a 400. That is the SDK's,
   not ours; revocation from the CLI does not depend on it.
-- Hiding `capture` from `tools/list` relies on the 2.x server calling
-  `self.list_tools()`; on 1.x it would still be listed, and still refused.
+- The SDK's metadata lists `client_secret_post` and `client_secret_basic` as
+  token auth methods but not `none`, although it registers and serves public
+  clients. A pre-registered client uses `client_secret_post` (or `--auth
+  basic`), which the metadata does list.
+- The `tools/list` filter and the `tools/call` gate rely on the 2.x server
+  calling `self.list_tools()` / `self.call_tool()`; OAuth mode requires 2.x.
 
 ## Threat model
 
 Assets: the vault's personal notes (read), the ability to write a note
 (`capture`), the walled vault (never served). Adversary: anyone on the
-internet, including someone who knows this server's URL, can register
-clients, and can send the owner links.
+internet, including someone who knows this server's URL, can send requests
+of any size, can register clients while registration is open, and can send
+the owner links.
 
 | Threat | Control |
 |---|---|
 | Someone calls `/mcp` without a token | 401 (SDK middleware); unchanged from the bearer mode |
+| Static bearer leaked and used from the internet | refused on proxied requests in OAuth mode (needs the proxy to set `X-Forwarded-For`) |
 | Stolen access token | 1 h lifetime, audience-bound, stored hashed; `ozu mcp tokens revoke` kills it at once; read-only scope |
-| Stolen refresh token | rotation + reuse detection revokes the family; 90-day family cap; revocable from the CLI |
-| Stolen state file | only hashes of tokens and codes; no signing key |
-| Authorization-code interception | PKCE S256 mandatory (SDK), code single use, 120 s, replay revokes the family; code delivered only to allowlisted redirect URIs |
+| Stolen refresh token | rotation + reuse detection revokes the family (except a same-client re-send within 5 s); 90-day family cap; revocable from the CLI; a pre-registered client's refresh also needs its secret |
+| Stolen state file | only hashes of tokens and codes; no signing key; pre-registered client secrets are in it as issued (useless without the owner's consent) |
+| Authorization-code interception | PKCE S256 mandatory (SDK), code single use, 120 s, replay revokes the family; code delivered only to allowlisted redirect URIs; a pre-registered client's code also needs its secret |
 | Open redirect | exact redirect match (SDK) + allowlist at registration and at `/authorize`; unknown client or bad redirect is a 400 page, never a redirect |
 | CSRF / login CSRF on the GitHub round trip | `state` bound to the pending authorization, plus the browser cookie, plus a one-time consent token on the POST |
-| Consent phishing (attacker registers "Claude" and sends the owner a link) | the consent page names the client, its id, the redirect **host** in large type and the full URI; only allowlisted redirects exist; only the pinned GitHub account can approve |
+| **Consent phishing** (attacker adds a connector in their own claude.ai, sends the owner its authorize link) | default client is pre-registered and confidential, so the resulting code is useless without the secret; registration closed by default; the consent page names client, id, redirect host and says to Deny anything the owner did not start; the grant hook tells the owner of every new grant. **Residual** while registration is open: the code goes to claude.ai with the attacker's `state`; whether claude.ai would complete it for the attacker is not known here |
 | Someone else's GitHub account | id and login must both match the pinned values; anyone else gets a 403 page and nothing is stored |
 | GitHub login renamed or reused | the numeric id is pinned |
-| DCR abuse (flooding, huge metadata, odd redirects) | registration grants nothing; allowlist; size caps; 1 h expiry of unused clients; 10/hour and 50 total |
-| Pending-authorization flooding | 30 per 10 min, 10 min expiry |
+| Unauthenticated memory exhaustion (huge bodies) | 16 KB cap on every added route (413 before reading), the SDK's cap on its own; 64 KB `request_body` in the Caddy example |
+| DCR abuse (flooding, huge metadata, odd redirects) | closed by default (404); when open: registration grants nothing; allowlist; size caps; 1 h expiry of unused clients; 10/hour and 50 total |
+| Pending-authorization flooding / lock-out | 3 per client and 30 shared per 10 min; clients that already have a token are exempt from the shared cap; 10 min expiry; refused cleanly (`temporarily_unavailable`) |
 | Clickjacking the consent page | `X-Frame-Options: DENY`, `frame-ancestors 'none'` |
-| Mix-up | single AS, `iss` in the redirect |
-| `capture` reached over OAuth | scope never issuable; call-time check in the tool wrapper |
+| Mix-up | single AS, `iss` in the redirect and advertised |
+| `capture` (or any non-read tool) reached over OAuth | scope never issuable; deny-by-default classes by registered name, checked in the wrapper and at `tools/call`; start-up refused with an unclassified tool |
 | Walled content over OAuth | same tool bodies, same `_vault_ok` / `_label_served`; tested |
-| Secrets in logs or error bodies | no value that grants anything is logged; access-log query strings stripped; tested on captured logs and bodies |
+| Secrets in logs or error bodies | no value that grants anything is logged; access-log query strings stripped; grant hook gets facts only; tested on captured logs, bodies and the hook's environment |
 | Half-configured server | refuses to start, naming the missing settings (never their values) |
 | Token passthrough | Ozu never forwards a client token anywhere; the GitHub token is its own and is deleted |
 
@@ -310,12 +417,15 @@ tokens by design; revoke from the CLI).
 | `OZU_MCP_GITHUB_CLIENT_ID` / `OZU_MCP_GITHUB_CLIENT_SECRET` | **required**, the GitHub OAuth app |
 | `OZU_MCP_GITHUB_LOGIN` | **required**, the one GitHub login allowed |
 | `OZU_MCP_GITHUB_USER_ID` | **required**, its numeric id (digits only) |
-| `OZU_MCP_OAUTH_REDIRECT_URIS` | optional, comma-separated exact redirect URIs; default the claude.ai and claude.com callbacks |
+| `OZU_MCP_OAUTH_REDIRECT_URIS` | optional, comma-separated exact redirect URIs; default the claude.ai and claude.com callbacks; also the redirects a pre-registered client gets |
 | `OZU_MCP_OAUTH_ALLOW_LOOPBACK` | optional, `1` also allows loopback redirects (Claude Code) |
+| `OZU_MCP_OAUTH_REGISTRATION` | `0` (default) dynamic registration closed except for a CLI window; `1` always open |
+| `OZU_MCP_STATIC_BEARER_REMOTE` | `0` (default) the static bearer is refused through the proxy in OAuth mode; `1` accepts it |
+| `OZU_MCP_GRANT_HOOK` | optional command line, run without a shell on every new grant (above) |
 | `OZU_MCP_GITHUB_URL` / `OZU_MCP_GITHUB_API_URL` | optional, default `https://github.com` / `https://api.github.com`; https or loopback only (tests, GitHub Enterprise) |
 
-`OZU_MCP_TOKEN` stays required for `--http` in both modes, and the static
-bearer keeps working unchanged.
+`OZU_MCP_TOKEN` stays required for `--http` in both modes; the static bearer
+keeps working unchanged on loopback.
 
 **Two settings move together, as before:** `OZU_MCP_PUBLIC_URL` is the
 issuer, the base of the PRM's `resource` (`<public>/mcp`), the GitHub
@@ -330,9 +440,13 @@ Everything under the public name, unchanged, to the loopback port:
 `/mcp`, `/.well-known/oauth-protected-resource/mcp`,
 `/.well-known/oauth-authorization-server`, `/authorize`, `/token`,
 `/register`, `/revoke`, `/oauth/start`, `/oauth/github/callback`,
-`/oauth/consent`. It must pass the `Host` header as received (Caddy does)
-and must not cache. `deploy/caddy-mcp.conf` forwards the whole site, so it
-needs no new rule; do not add basic auth in front of it.
+`/oauth/consent`. It must pass the `Host` header as received (Caddy does),
+must **always set `X-Forwarded-For`** (Caddy does; the example says so),
+must not cache, and should cap request bodies on the OAuth paths (the
+example uses 64 KB). Do not add basic auth in front of it. **Never add a
+`log` directive for these paths without stripping query strings and the
+`Location` response header**: they carry the flow id, GitHub's code and
+state, and the authorization code.
 
 ## Turning it on
 
@@ -347,33 +461,57 @@ needs no new rule; do not add basic auth in front of it.
    `OZU_MCP_OAUTH=1`, `OZU_MCP_PUBLIC_URL=https://ozu.example.com`,
    `OZU_MCP_GITHUB_CLIENT_ID=...`, `OZU_MCP_GITHUB_CLIENT_SECRET=...`,
    `OZU_MCP_GITHUB_LOGIN=<login>`, `OZU_MCP_GITHUB_USER_ID=<digits>`.
-   Add `OZU_MCP_OAUTH_ALLOW_LOOPBACK=1` only if Claude Code will sign in by
-   OAuth too (it can keep using the static bearer instead).
+   Optionally `OZU_MCP_GRANT_HOOK=<a command that notifies you>`. Add
+   `OZU_MCP_OAUTH_ALLOW_LOOPBACK=1` only if Claude Code will sign in by OAuth
+   too (it can keep using the static bearer on the box instead). **Confirm
+   `OZU_ALLOW_WORK_MCP` is unset.**
 4. **Restart the server** (e.g. `systemctl --user restart ozu-mcp`) and read
-   its log: it refuses to start, naming what is missing, if anything is.
-5. **Proxy:** install `deploy/caddy-mcp.conf` with your name, then
+   its log: it refuses to start, naming what is missing, if anything is (or
+   naming a tool registered without an access class).
+5. **Create the client:** `ozu mcp client create --name Claude`. Copy the
+   client id and secret it prints; the secret is not shown again (if lost,
+   `ozu mcp client revoke <id>` and create another).
+6. **Proxy:** install `deploy/caddy-mcp.conf` with your name, then
    `sudo caddy validate --config /etc/caddy/Caddyfile` **before**
    `sudo systemctl reload caddy`.
-6. **Check from another machine:**
+7. **Check from another machine:**
    - `curl -si https://ozu.example.com/mcp -X POST` → `401` with
      `WWW-Authenticate: Bearer ... resource_metadata="https://ozu.example.com/.well-known/oauth-protected-resource/mcp"`.
    - `curl -s https://ozu.example.com/.well-known/oauth-protected-resource/mcp`
      → `"resource":"https://ozu.example.com/mcp"`.
    - `curl -s https://ozu.example.com/.well-known/oauth-authorization-server`
-     → `"code_challenge_methods_supported":["S256"]` and a `registration_endpoint`.
-   - **The 421 pitfall:** these are all unauthenticated, so they succeed
-     even when `OZU_MCP_PUBLIC_URL` is wrong. Make one *authenticated* call
-     (the static bearer from a trusted machine:
-     `curl -si -X POST https://ozu.example.com/mcp -H "Authorization: Bearer $OZU_MCP_TOKEN" -H 'Accept: application/json, text/event-stream' -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"ping"}'`):
-     a 421 means the public URL does not match the Host the proxy forwards.
-     Fix the URL; never disable DNS-rebinding protection.
-7. **Add the connector in claude.ai:** Settings → Connectors → Add custom
+     → `"code_challenge_methods_supported":["S256"]`, no `registration_endpoint`.
+   - `curl -s -o /dev/null -w '%{http_code}\n' -X POST https://ozu.example.com/register` → `404`.
+   - The static bearer from outside → `401` ("not accepted through the proxy").
+   - **The 421 pitfall:** all of the above are answered before the Host
+     check, so they succeed even when `OZU_MCP_PUBLIC_URL` is wrong. The
+     first *authenticated* MCP request through the proxy is the real check:
+     the connector's own (step 8: if Claude lists the tools, there is no
+     421), or, before turning OAuth on, the static bearer in bearer-only
+     mode. A 421 means the public URL does not match the Host the proxy
+     forwards. Fix the URL; never disable DNS-rebinding protection.
+8. **Add the connector in claude.ai:** Settings → Connectors → Add custom
    connector, URL `https://ozu.example.com/mcp` (with `/mcp`: the PRM
-   resource must equal what you type), no client id or secret (Claude
-   registers itself). Connect: GitHub asks you to sign in or authorize the
-   app, then Ozu's consent page names the client and `claude.ai`; approve.
-   Connectors added on the web are also available in the phone app.
-8. **Confirm:** `ozu mcp tokens list` shows one active grant for "Claude";
+   resource must equal what you type), and under the connector's advanced
+   settings the **OAuth client id and client secret** from step 5. Connect:
+   GitHub asks you to sign in or authorize the app, then Ozu's consent page
+   names the client and `claude.ai`; approve. Connectors added on the web are
+   also available in the phone app.
+   - **Not verified:** that claude.ai offers client id / secret fields for a
+     custom connector in your plan (Anthropic's developer docs describe
+     client credentials for directory connectors; this could not be checked
+     for a personal custom connector without opening the endpoint). If the
+     token step fails with `invalid_client`, recreate the client with
+     `--auth basic` and try again.
+   - **If there are no such fields:** open registration for a few minutes,
+     connect, close it: `ozu mcp registration open 5`, add the connector
+     with no id or secret (Claude registers itself), approve, then
+     `ozu mcp registration close`. Residual risk: while the window is open,
+     the consent-phishing scenario above applies; a public client's codes
+     need no secret. Keep the window short, approve only a flow you just
+     started yourself, and watch the grant hook / `ozu mcp tokens list`
+     for a grant you do not recognise.
+9. **Confirm:** `ozu mcp tokens list` shows one active grant for "Claude";
    in a chat, ask Claude to search your notes; asking it to capture a note
    is refused.
 
@@ -383,9 +521,11 @@ needs no new rule; do not add basic auth in front of it.
 refreshed, expiry, status), never a token value. `ozu mcp tokens revoke
 <family-id>` revokes one grant, `ozu mcp tokens revoke --client <client-id>`
 revokes every grant of a client and forgets it, `ozu mcp tokens revoke
---all` revokes everything. Revocation is immediate, without a restart: every
-request looks its token up. Removing the connector in claude.ai does not
-revoke anything on this side; do both.
+--all` revokes everything. `ozu mcp client list` shows the clients (never a
+secret); `ozu mcp client revoke <client-id>` removes one and revokes its
+grants. Revocation is immediate, without a restart: every request looks its
+token up. Removing the connector in claude.ai does not revoke anything on
+this side; do both.
 
 ### Turning it off
 

@@ -31,7 +31,7 @@ Commands:
            briefs, missing sections, dead links; exits 1 on any finding
   digest   write the weekly digest Markdown into ~/ozu-data/digests/ (the
            typeset copy rides Sunday's evening edition)
-  mcp      start the MCP server (add --http for remote; `mcp tokens` lists/revokes OAuth grants)
+  mcp      start the MCP server (add --http for remote; `mcp tokens|client|registration` manage OAuth)
   status   queue and vault counts
 """
 from __future__ import annotations
@@ -356,9 +356,9 @@ def main() -> None:
     elif cmd == "digest":
         from . import digest
         digest.run()
-    elif cmd == "mcp" and sys.argv[2:3] == ["tokens"]:
+    elif cmd == "mcp" and sys.argv[2:3] in (["tokens"], ["client"], ["registration"]):
         from . import mcp_oauth
-        sys.exit(mcp_oauth.cli(sys.argv[3:], cfg.mcp_oauth_db))
+        sys.exit(mcp_oauth.cli(sys.argv[2:], cfg))
     elif cmd == "mcp":
         from . import mcp_server
         mcp_server.main()
