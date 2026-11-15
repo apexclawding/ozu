@@ -646,12 +646,12 @@ def test_an_unclassified_tool_refuses_start_and_is_unreachable(tmp_path, monkeyp
 def test_register_tool_is_the_way_in_for_other_modules(tmp_path, monkeypatch):
     e = make_env(tmp_path, monkeypatch)
 
-    def semantic_search(query: str) -> str:
+    def meaning_search(query: str) -> str:
         return f"read {query}"
 
     def note_writer(text: str) -> str:
         return "wrote"
-    e.srv.register_tool(e.server, semantic_search, access="read")
+    e.srv.register_tool(e.server, meaning_search, access="read")
     e.srv.register_tool(e.server, note_writer, access="write", name="add_note")
     e.srv.check_tools_classified(e.server)
     with pytest.raises(ValueError):
@@ -661,7 +661,7 @@ def test_register_tool_is_the_way_in_for_other_modules(tmp_path, monkeypatch):
         _, tok = grant(e)
         at = tok["access_token"]
         sid = session(c, at)
-        assert "read x" in json.dumps(call(c, at, sid, "semantic_search", query="x"))
+        assert "read x" in json.dumps(call(c, at, sid, "meaning_search", query="x"))
         assert call(c, at, sid, "add_note", text="t")["isError"]
         assert "wrote" in json.dumps(call(c, STATIC, session(c, STATIC), "add_note", text="t"))
 
