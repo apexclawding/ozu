@@ -13,9 +13,14 @@ Over HTTP every request must carry `Authorization: Bearer $OZU_MCP_TOKEN`.
 Without OZU_MCP_TOKEN set, `--http` refuses to start: an unauthenticated
 endpoint is how the whole vault leaks, and defaulting to open is worse than
 not running. stdio needs no token — it is a pipe to a local process.
+
+With OZU_MCP_OAUTH=1 the HTTP server is also its own OAuth authorization
+server, so claude.ai connectors can sign in (mcp_oauth.py, docs/mcp-oauth.md).
+OAuth tokens get `vault:read` only; the static bearer keeps every tool.
 """
 from __future__ import annotations
 
+import functools
 import os
 import secrets
 import sys
@@ -41,6 +46,96 @@ _TOOLS: list = []
 def _tool(fn):
     _TOOLS.append(fn)
     return fn
+
+
+# Who may call what. Deny by default: an OAuth token (scope vault:read) may
+# call only a tool registered with access "read"; anything else, `capture`
+# included, needs the static bearer's scope, which OAuth never issues. The
+# class is recorded per *registered* name, by register_tool, and in OAuth
+# mode the server refuses to start if any registered tool has no class.
+FULL_SCOPE = SCOPE            # == mcp_oauth.FULL_SCOPE
+READ_SCOPE = "vault:read"     # == mcp_oauth.READ_SCOPE
+READ_TOOLS = frozenset({"search_notes", "get_note", "graph_neighbors", "timeline",
+                        "open_actions"})
+ACCESS = ("read", "write")
+
+
+def _token_scopes():
+    """The scopes of the current request's access token, or None when the
+    request carries none (stdio, or a direct call)."""
+    try:
+        from mcp.server.auth.middleware.auth_context import get_access_token
+    except ImportError:  # an SDK without auth support cannot have authenticated anything
+        return None
+    tok = get_access_token()
+    return None if tok is None else set(tok.scopes)
+
+
+try:  # a refusal the SDK reports as a tool error, not as a crash
+    from mcp.server.mcpserver.exceptions import ToolError as _Refused
+except ImportError:  # mcp SDK 1.x
+    try:
+        from mcp.server.fastmcp.exceptions import ToolError as _Refused
+    except ImportError:
+        _Refused = PermissionError
+
+
+def _access(server) -> dict:
+    return server.__dict__.setdefault("_ozu_access", {})
+
+
+def _allowed(server, name: str, scopes) -> bool:
+    if FULL_SCOPE in scopes:
+        return True
+    return READ_SCOPE in scopes and _access(server).get(name) == "read"
+
+
+def register_tool(server, fn, *, access: str, name: str | None = None):
+    """Register `fn` as a tool together with its access class: "read" (an
+    OAuth `vault:read` session may call it) or "write" (only the static
+    bearer may). This is the one public way for another module to add a tool
+    (e.g. from a `register(server, ...)` hook): a tool added with a bare
+    `server.tool()` has no class, which OAuth mode refuses to start with,
+    rather than serving it open. The check runs at call time on the name the
+    tool is registered under."""
+    if access not in ACCESS:
+        raise ValueError(f"access must be one of {ACCESS}")
+    name = name or fn.__name__
+    # The SDK keeps the first tool registered under a name and drops the
+    # second; a second class for that name would then re-class the first
+    # tool (a write tool served as "read"). One name, one class, ever.
+    if name in _access(server) or name in registered_tool_names(server):
+        raise ValueError(f"a tool named {name!r} is already registered")
+    _access(server)[name] = access
+    auth_on = server.__dict__.get("_ozu_auth_on", False)
+
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        scopes = _token_scopes()
+        if scopes is None and auth_on:
+            raise _Refused("no access token on this request")
+        if scopes is not None and not _allowed(server, name, scopes):
+            raise _Refused(f"{name} requires scope "
+                           f"{READ_SCOPE if access == 'read' else FULL_SCOPE}")
+        return fn(*args, **kwargs)
+    server.tool(name=name)(wrapper)
+    return wrapper
+
+
+def registered_tool_names(server) -> set[str]:
+    return {t.name for t in server._tool_manager.list_tools()}
+
+
+def check_tools_classified(server) -> None:
+    """OAuth mode: every registered tool must have come through
+    register_tool, or the server does not start."""
+    loose = sorted(registered_tool_names(server) - set(_access(server)))
+    if loose:
+        raise SystemExit(
+            "OAuth is on, but these tools were registered without an access class: "
+            + ", ".join(loose) + ".\nRegister them with "
+            "mcp_server.register_tool(server, fn, access='read'|'write') so an OAuth "
+            "session can be refused them; `ozu mcp --http` will not start otherwise.")
 
 
 def _con():
@@ -171,10 +266,27 @@ class StaticToken:
         return None
 
 
-def build_server(token: str = "") -> "_Server":
-    """The server with its tools attached. A token turns on bearer auth."""
+def build_server(token: str = "", oauth=None) -> "_Server":
+    """The server with its tools attached. A token turns on bearer auth; an
+    `oauth` provider (mcp_oauth.GitHubOAuthProvider, which also answers for
+    the token) turns on the OAuth endpoints as well."""
     kwargs = {}
-    if token:
+    if oauth is not None:
+        from mcp.server.auth.settings import (AuthSettings, ClientRegistrationOptions,
+                                              RevocationOptions)
+        kwargs = dict(
+            auth_server_provider=oauth,
+            auth=AuthSettings(
+                issuer_url=oauth.issuer, resource_server_url=oauth.resource,
+                # Every token, the static bearer included, carries vault:read;
+                # what more a tool needs is checked per call (register_tool, _gate_tools).
+                required_scopes=[READ_SCOPE],
+                client_registration_options=ClientRegistrationOptions(
+                    enabled=True, valid_scopes=[READ_SCOPE], default_scopes=[READ_SCOPE]),
+                revocation_options=RevocationOptions(enabled=True),
+                validate_token_resource=True),
+        )
+    elif token:
         from mcp.server.auth.settings import AuthSettings
         cfg = get_config()
         # A static bearer token is a shared secret, not a token issued for an
@@ -195,9 +307,44 @@ def build_server(token: str = "") -> "_Server":
                               required_scopes=[SCOPE], **extra),
         )
     server = _Server("ozu-graph", **kwargs)
+    server._ozu_auth_on = bool(kwargs)
     for fn in _TOOLS:
-        server.tool()(fn)
+        register_tool(server, fn, access="read" if fn.__name__ in READ_TOOLS else "write")
+    if oauth is not None:
+        oauth.install(server)
+        _gate_tools(server)
     return server
+
+
+def _gate_tools(server) -> None:
+    """Two more layers in OAuth mode, both keyed on the called name and
+    denying by default: tools/list shows a session only what it may call,
+    and tools/call refuses before the tool is even looked up, so a tool
+    that skipped register_tool is not reachable over OAuth either."""
+    listed, called = server.list_tools, server.call_tool
+
+    async def list_tools():
+        scopes = _token_scopes()
+        tools = await listed()
+        return tools if scopes is None else [t for t in tools
+                                             if _allowed(server, t.name, scopes)]
+
+    async def call_tool(name, arguments, context=None):
+        scopes = _token_scopes()
+        if scopes is None or not _allowed(server, name, scopes):
+            raise _Refused(f"{name} is not available to this token")
+        return await called(name, arguments, context)
+    server.list_tools, server.call_tool = list_tools, call_tool
+
+
+def oauth_app(server, oauth):
+    """The ASGI app OAuth mode serves: the SDK's streamable-http app (with
+    DNS-rebinding protection) behind mcp_oauth.OAuthEdge."""
+    from . import mcp_oauth
+    cfg = get_config()
+    app = server.streamable_http_app(transport_security=transport_security(),
+                                     host=cfg.mcp_host)
+    return mcp_oauth.OAuthEdge(app, oauth, server.settings.auth)
 
 
 def transport_security():
@@ -236,6 +383,17 @@ def main() -> None:
             "print(secrets.token_urlsafe(32))\"`\n"
             f"and add it to {cfg.home / '.env'} as "
             "OZU_MCP_TOKEN=... (no inline comment — the value would keep it).")
+    from . import mcp_oauth
+    if mcp_oauth.enabled(cfg):  # refuses to start half-configured
+        oauth = mcp_oauth.GitHubOAuthProvider(mcp_oauth.settings_from_config(cfg),
+                                              static_token=cfg.mcp_token)
+        server = build_server(cfg.mcp_token, oauth=oauth)
+        check_tools_classified(server)
+        import uvicorn
+        app = oauth_app(server, oauth)
+        mcp_oauth.quiet_access_log()
+        uvicorn.run(app, host=cfg.mcp_host, port=cfg.mcp_port, log_level="info")
+        return
     server = build_server(cfg.mcp_token)
     kwargs = {"transport": "streamable-http",
               "transport_security": transport_security()}

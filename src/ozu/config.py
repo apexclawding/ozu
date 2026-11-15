@@ -235,6 +235,32 @@ class Config:
         self.mcp_token = os.environ.get("OZU_MCP_TOKEN", "")
         self.mcp_public_url = os.environ.get(
             "OZU_MCP_PUBLIC_URL", f"http://{self.mcp_host}:{self.mcp_port}")
+        self.mcp_public_url_set = bool(os.environ.get("OZU_MCP_PUBLIC_URL", "").strip())
+        # Optional OAuth for claude.ai connectors (docs/mcp-oauth.md). Off
+        # unless OZU_MCP_OAUTH=1; mcp_oauth.check_settings refuses to start a
+        # half-configured server rather than serve with a gap.
+        self.mcp_oauth = os.environ.get("OZU_MCP_OAUTH", "").strip()
+        self.mcp_github_client_id = os.environ.get("OZU_MCP_GITHUB_CLIENT_ID", "").strip()
+        self.mcp_github_client_secret = os.environ.get("OZU_MCP_GITHUB_CLIENT_SECRET", "").strip()
+        self.mcp_github_login = os.environ.get("OZU_MCP_GITHUB_LOGIN", "").strip()
+        self.mcp_github_user_id = os.environ.get("OZU_MCP_GITHUB_USER_ID", "").strip()
+        self.mcp_github_url = os.environ.get("OZU_MCP_GITHUB_URL", "https://github.com").strip()
+        self.mcp_github_api_url = os.environ.get(
+            "OZU_MCP_GITHUB_API_URL", "https://api.github.com").strip()
+        self.mcp_oauth_redirect_uris = [
+            u.strip() for u in os.environ.get(
+                "OZU_MCP_OAUTH_REDIRECT_URIS",
+                "https://claude.ai/api/mcp/auth_callback,"
+                "https://claude.com/api/mcp/auth_callback").split(",") if u.strip()]
+        self.mcp_oauth_allow_loopback = os.environ.get("OZU_MCP_OAUTH_ALLOW_LOOPBACK") == "1"
+        # Dynamic client registration: closed unless 1 (or a timed window
+        # opened from the CLI); the default client is pre-registered.
+        self.mcp_oauth_registration = os.environ.get("OZU_MCP_OAUTH_REGISTRATION", "0").strip()
+        # A command (no shell) run on every new grant, given only non-secret facts.
+        self.mcp_grant_hook = os.environ.get("OZU_MCP_GRANT_HOOK", "").strip()
+        # In OAuth mode the static bearer is refused on proxied requests unless 1.
+        self.mcp_static_remote = os.environ.get("OZU_MCP_STATIC_BEARER_REMOTE", "0").strip()
+        self.mcp_oauth_db = self.home / "mcp-oauth.db"
 
     def ensure_dirs(self) -> None:
         for d in (self.home, self.raw_dir, self.pages_dir, self.log_dir,
