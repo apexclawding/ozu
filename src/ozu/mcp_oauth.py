@@ -45,6 +45,7 @@ MAX_REGISTRATIONS_PER_HOUR = 10
 MAX_CLIENTS = 50
 MAX_PENDING = 30             # per PENDING_TTL, for clients that never got a token
 MAX_PENDING_PER_CLIENT = 3   # per PENDING_TTL, for every client
+GITHUB_SIGNIN_GRACE = 120    # s: a request on GitHub's sign-in page is not evicted for this long
 MAX_BODY = 16 * 1024         # every route this module adds; a form here is a few hundred bytes
 REFRESH_GRACE = 5            # s: the same client re-sending a just-rotated refresh token
 HOOK_TIMEOUT = 10            # s: OZU_MCP_GRANT_HOOK is killed after this
@@ -57,6 +58,27 @@ HTTP_TIMEOUT = 10.0
 LOOPBACK = {"127.0.0.1", "localhost", "::1"}
 
 log = logging.getLogger("ozu.mcp_oauth")
+
+
+def canonical_url(url: str) -> str:
+    """`url` as the SDK will hand it back: parsed through pydantic's AnyUrl,
+    the type of every URL in the SDK's models, so the host is lowercased (and
+    punycoded), a default port dropped and a bare origin given its `/`. Every
+    configured URL is stored in this form and every incoming one compared in
+    it, or `https://Claude.ai:443/...` in the config would pass the start-up
+    check and then never match. Raises ValueError on a URL it cannot parse."""
+    from pydantic import AnyUrl, ValidationError
+    try:
+        return str(AnyUrl(url))
+    except ValidationError as exc:
+        raise ValueError("not a URL") from exc
+
+
+def _canonical_or_none(url: str) -> str | None:
+    try:
+        return canonical_url(url)
+    except ValueError:
+        return None
 
 
 def http_lib():
@@ -87,6 +109,12 @@ class OAuthSettings:
     grant_hook: list[str] = field(default_factory=list)
     static_remote: bool = False          # OZU_MCP_STATIC_BEARER_REMOTE=1
 
+    def __post_init__(self):
+        # Canonical once, here, so issuer, resource and the redirect
+        # allowlist compare like with like (see canonical_url).
+        self.public_url = canonical_url(self.public_url).rstrip("/")
+        self.redirect_uris = [canonical_url(u) for u in self.redirect_uris]
+
 
 def enabled(cfg) -> bool:
     """OZU_MCP_OAUTH: `1` on, unset/empty/`0` off, anything else refused, so a
@@ -109,6 +137,8 @@ def _url_problem(name: str, url: str, *, path_ok: bool) -> str | None:
         return f"{name} must not carry a query, a fragment or credentials"
     if not path_ok and p.path not in ("", "/"):
         return f"{name} must be an origin with no path (e.g. https://ozu.example.com)"
+    if _canonical_or_none(url) is None:
+        return f"{name} is not a URL the MCP SDK can parse"
     return None
 
 
@@ -165,7 +195,7 @@ def settings_from_config(cfg) -> OAuthSettings:
             "half-configured:\n  - " + "\n  - ".join(problems)
             + f"\nSet them in {cfg.home / '.env'} (see docs/mcp-oauth.md).")
     return OAuthSettings(
-        public_url=cfg.mcp_public_url.rstrip("/"),
+        public_url=cfg.mcp_public_url,
         github_client_id=cfg.mcp_github_client_id,
         github_client_secret=cfg.mcp_github_client_secret,
         github_login=cfg.mcp_github_login,
@@ -192,7 +222,7 @@ CREATE TABLE IF NOT EXISTS pending (
     txn TEXT PRIMARY KEY, client_id TEXT NOT NULL, params TEXT NOT NULL,
     stage TEXT NOT NULL, gh_state TEXT, nonce TEXT, consent TEXT,
     gh_verifier TEXT, gh_id INTEGER, gh_login TEXT,
-    created REAL NOT NULL, expires REAL NOT NULL);
+    created REAL NOT NULL, expires REAL NOT NULL, started REAL);
 CREATE TABLE IF NOT EXISTS codes (
     code TEXT PRIMARY KEY, client_id TEXT NOT NULL, data TEXT NOT NULL,
     expires REAL NOT NULL, used REAL, family TEXT);
@@ -216,7 +246,20 @@ def _same(a: str | None, b: str | None) -> bool:
     return bool(a) and bool(b) and secrets.compare_digest(a.encode(), b.encode())
 
 
+def _open(db_path: Path) -> sqlite3.Connection:
+    """A connection to a state file connect() has already created and
+    migrated. Read-write but never create: a file deleted under a running
+    server is an error, not a fresh one made with the process umask and no
+    schema."""
+    con = sqlite3.connect(db_path.resolve().as_uri() + "?mode=rw", uri=True, timeout=10)
+    con.row_factory = sqlite3.Row
+    return con
+
+
 def connect(db_path: Path) -> sqlite3.Connection:
+    """Create the state file 0600 if needed, bring its schema up to date and
+    return a connection to it. Once per process (and per CLI command); each
+    request's transaction then uses _open."""
     db_path.parent.mkdir(parents=True, exist_ok=True)
     if not db_path.exists():
         os.close(os.open(db_path, os.O_CREAT | os.O_WRONLY, 0o600))
@@ -227,6 +270,8 @@ def connect(db_path: Path) -> sqlite3.Connection:
     cols = {r[1] for r in con.execute("PRAGMA table_info(clients)")}
     if "kind" not in cols:  # a state file from before pre-registered clients
         con.execute("ALTER TABLE clients ADD COLUMN kind TEXT NOT NULL DEFAULT 'dcr'")
+    if "started" not in {r[1] for r in con.execute("PRAGMA table_info(pending)")}:
+        con.execute("ALTER TABLE pending ADD COLUMN started REAL")  # when it went to GitHub
     return con
 
 
@@ -277,7 +322,7 @@ class GitHubOAuthProvider:
     def _db(self):
         """One short transaction: committed on exit, rolled back on an
         exception, and the connection closed either way."""
-        con = connect(self.s.db_path)
+        con = _open(self.s.db_path)
         try:
             with con:
                 yield con
@@ -292,7 +337,7 @@ class GitHubOAuthProvider:
     def redirect_allowed(self, uri: str) -> bool:
         if len(uri) > MAX_URI_LEN:
             return False
-        if uri in self.s.redirect_uris:
+        if _canonical_or_none(uri) in self.s.redirect_uris:
             return True
         if not self.s.allow_loopback:
             return False
@@ -301,21 +346,25 @@ class GitHubOAuthProvider:
                 and not p.password and not p.fragment)
 
     def _is_our_resource(self, resource: str) -> bool:
-        r = resource.strip().rstrip("/")
-        p = urlparse(r)
-        norm = f"{p.scheme.lower()}://{p.netloc.lower()}{p.path}"
-        return not p.query and not p.fragment and norm in (self.issuer, self.resource)
+        p = urlparse(resource.strip())
+        if p.query or p.fragment:
+            return False
+        norm = _canonical_or_none(resource.strip())
+        return norm is not None and norm.rstrip("/") in (self.issuer, self.resource)
 
     # ---- clients (DCR)
     async def get_client(self, client_id: str):
-        from mcp.shared.auth import OAuthClientInformationFull
         with self._db() as con:
-            row = con.execute("SELECT * FROM clients WHERE client_id=?", (client_id,)).fetchone()
-            if not row:
-                return None
-            if not row["used"] and row["created"] < self._now() - CLIENT_UNUSED_TTL:
-                con.execute("DELETE FROM clients WHERE client_id=?", (client_id,))
-                return None
+            return self._client(con, client_id)
+
+    def _client(self, con, client_id: str):
+        from mcp.shared.auth import OAuthClientInformationFull
+        row = con.execute("SELECT * FROM clients WHERE client_id=?", (client_id,)).fetchone()
+        if not row:
+            return None
+        if not row["used"] and row["created"] < self._now() - CLIENT_UNUSED_TTL:
+            con.execute("DELETE FROM clients WHERE client_id=?", (client_id,))
+            return None
         info = OAuthClientInformationFull.model_validate_json(row["info"])
         # A client whose redirect is no longer on the allowlist is treated as
         # unknown: the SDK then answers 400 instead of redirecting to it.
@@ -385,13 +434,20 @@ class GitHubOAuthProvider:
             # A registration window bounds when a client may be created; this
             # bounds how long one nobody ever approved stays usable. Without
             # it a client registered during a ten-minute window could show
-            # the owner a consent page for the rest of its hour.
-            closed = bool(trusted and trusted["kind"] == "dcr" and not trusted["used"]
-                          and not reg_open)
-            # At its cap a client loses its oldest request that nobody has
-            # signed in for, instead of being refused: a client id is public,
-            # and three anonymous /authorize calls every ten minutes would
-            # otherwise keep the owner from ever connecting. A request that
+            # the owner a consent page for the rest of its hour. A client the
+            # prune just forgot (the SDK loaded it a moment earlier) is
+            # refused here too, before the owner is sent through GitHub for
+            # an "Application unknown".
+            unknown = trusted is None
+            closed = unknown or bool(trusted["kind"] == "dcr" and not trusted["used"]
+                                     and not reg_open)
+            # At its cap a client loses a request instead of being refused: a
+            # client id is public, and three anonymous /authorize calls every
+            # ten minutes would otherwise keep the owner from ever
+            # connecting. The victim is the oldest request nobody has opened
+            # in a browser ('new'), else the oldest one that went to GitHub
+            # more than GITHUB_SIGNIN_GRACE ago, so a flood cannot cancel a
+            # sign-in while the owner is on GitHub's page. A request that
             # reached the consent page (the pinned account signed in) is
             # never evicted.
             mine = con.execute("SELECT COUNT(*) FROM pending WHERE client_id=? AND created>?",
@@ -399,13 +455,14 @@ class GitHubOAuthProvider:
             if mine >= MAX_PENDING_PER_CLIENT and not closed:
                 cur = con.execute(
                     "DELETE FROM pending WHERE txn=(SELECT txn FROM pending WHERE client_id=?"
-                    " AND stage IN ('new','github') ORDER BY created, rowid LIMIT 1)",
-                    (client.client_id,))
+                    " AND (stage='new' OR (stage='github' AND started<?))"
+                    " ORDER BY stage='github', created, rowid LIMIT 1)",
+                    (client.client_id, now - GITHUB_SIGNIN_GRACE))
                 mine -= cur.rowcount
             # A client that already obtained a token (or a pre-registered one)
             # is exempt from the global cap, so a flood of fresh clients cannot
             # lock the owner's own connector out; every client has its own cap.
-            others = 0 if (trusted and trusted["used"]) else con.execute(
+            others = 0 if (not unknown and trusted["used"]) else con.execute(
                 "SELECT COUNT(*) FROM pending WHERE created>?", (since,)).fetchone()[0]
             full = mine >= MAX_PENDING_PER_CLIENT or others >= MAX_PENDING
             if not full and not closed:
@@ -418,7 +475,10 @@ class GitHubOAuthProvider:
                         "explicit": params.redirect_uri_provided_explicitly,
                         "resource": self.resource,
                     }), "new", now, now + PENDING_TTL))
-        if closed:  # raised outside the transaction: the SDK's errors are frozen
+        if unknown:  # raised outside the transaction: the SDK's errors are frozen
+            log.warning("authorization refused: client %s was forgotten", client.client_id)
+            raise AuthorizeError("unauthorized_client", "this client is no longer registered")
+        if closed:
             log.warning("authorization refused: client %s was never approved and "
                         "registration is closed", client.client_id)
             raise AuthorizeError("unauthorized_client",
@@ -450,8 +510,9 @@ class GitHubOAuthProvider:
             gh_state, nonce = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
             verifier = secrets.token_urlsafe(48)
             cur = con.execute(
-                "UPDATE pending SET stage='github', gh_state=?, nonce=?, gh_verifier=?"
-                " WHERE txn=? AND stage='new'", (_h(gh_state), _h(nonce), verifier, row["txn"]))
+                "UPDATE pending SET stage='github', gh_state=?, nonce=?, gh_verifier=?,"
+                " started=? WHERE txn=? AND stage='new'",
+                (_h(gh_state), _h(nonce), verifier, self._now(), row["txn"]))
             if cur.rowcount != 1:
                 return _page("Authorization expired", "<p>Start again.</p>", 400)
         challenge = base64.urlsafe_b64encode(
@@ -716,6 +777,7 @@ class GitHubOAuthProvider:
             if token is not None:
                 # The pair this token was rotated into, kept in memory only,
                 # for a client that sends the same refresh twice at once.
+                self._graced(None)   # drop expired pairs, so the cache holds seconds, not months
                 self._grace[_h(refresh_token.token)] = (now + REFRESH_GRACE,
                                                         client.client_id, token)
         if token is None:
@@ -728,10 +790,15 @@ class GitHubOAuthProvider:
         log.info("refreshed grant %s for client %s", fam["family"], client.client_id)
         return token
 
-    def _graced(self, refresh_token: str):
+    def _graced(self, refresh_token: str | None):
+        """Drop the expired pairs, then (client_id, pair) for `refresh_token`
+        if it was rotated less than REFRESH_GRACE ago. Called on every
+        rotation too, so no plaintext pair outlives its few seconds."""
         now = self._now()
         for k in [k for k, v in self._grace.items() if v[0] < now]:
             del self._grace[k]
+        if refresh_token is None:
+            return None
         hit = self._grace.get(_h(refresh_token))
         return None if hit is None else (hit[1], hit[2])
 
@@ -744,11 +811,11 @@ class GitHubOAuthProvider:
             return None
         with self._db() as con:
             live = self._live(con, token, "access")
+            if live and self._client(con, live[1]["client_id"]) is None:
+                live = None
         if not live:
             return None
         row, fam = live
-        if await self.get_client(fam["client_id"]) is None:
-            return None
         return AccessToken(token=token, client_id=fam["client_id"],
                            scopes=fam["scopes"].split(), expires_at=int(row["expires"]),
                            resource=fam["resource"], subject=fam["subject"])
@@ -778,7 +845,7 @@ class GitHubOAuthProvider:
     def _prune(self, con) -> None:
         """Forget what can no longer be used. Codes are kept an hour past
         expiry (replay detection), revoked or ended grants 30 days (the CLI
-        lists them), dynamically registered clients with no live grant left."""
+        lists them), dynamically registered clients nobody ever approved."""
         now = self._now()
         con.execute("DELETE FROM pending WHERE expires<?", (now,))
         con.execute("DELETE FROM codes WHERE expires<?", (now - 3600,))
@@ -786,11 +853,15 @@ class GitHubOAuthProvider:
                     "families WHERE revoked IS NOT NULL OR expires<?)", (now, now))
         con.execute("DELETE FROM families WHERE COALESCE(revoked, expires)<?",
                     (now - 30 * 86400,))
+        # Only a client nobody ever approved is forgotten by itself. One the
+        # owner approved stays, with or without a live grant: when its grant
+        # ends (90 days) or is revoked it comes back through /authorize with
+        # its cached client_id, and deleting it then left the owner at
+        # "Application unknown" after the GitHub sign-in, with registration
+        # (closed by default) the only way back. `ozu mcp client revoke`
+        # removes one; MAX_CLIENTS bounds them.
         con.execute("DELETE FROM clients WHERE kind='dcr' AND used=0 AND created<?",
                     (now - CLIENT_UNUSED_TTL,))
-        con.execute("DELETE FROM clients WHERE kind='dcr' AND used=1 AND client_id NOT IN "
-                    "(SELECT client_id FROM families WHERE revoked IS NULL AND expires>=?)",
-                    (now,))
 
     # ---- wiring
     def install(self, server) -> None:
@@ -903,7 +974,13 @@ def run_grant_hook(argv: list[str], facts: dict[str, str]) -> None:
         except (OSError, ValueError) as exc:
             log.warning("grant hook could not run (%s)", type(exc).__name__)
 
-    threading.Thread(target=run, name="ozu-grant-hook", daemon=True).start()
+    # The grant is already committed when this runs: a thread that cannot be
+    # started (RLIMIT_NPROC, TasksMax, memory) must not turn it into a 500,
+    # whose retry would then look like a code replay and revoke it.
+    try:
+        threading.Thread(target=run, name="ozu-grant-hook", daemon=True).start()
+    except Exception as exc:  # noqa: BLE001 - nothing here may fail the grant
+        log.warning("grant hook could not be started (%s)", type(exc).__name__)
 
 
 class OAuthEdge:
@@ -1023,7 +1100,10 @@ def cli(args: list[str], cfg) -> int:
               f"auth method:   {method}\n"
               "The secret is shown this once. Enter both in the connector's settings.")
         return 0
-    if not db_path.exists():
+    # A registration window is written before the server ever ran (the
+    # runbook opens one, then starts it), so that group creates the state
+    # file; the others have nothing to show or revoke without one.
+    if group != "registration" and not db_path.exists():
         print("no OAuth state yet (OAuth has never been on)")
         return 0
     con = connect(db_path)
@@ -1041,9 +1121,7 @@ def cli(args: list[str], cfg) -> int:
             return 0
         if group == "client" and len(rest) == 2 and rest[0] == "revoke":
             with con:
-                n = con.execute("UPDATE families SET revoked=? WHERE client_id=? AND "
-                                "revoked IS NULL", (now, rest[1])).rowcount
-                gone = con.execute("DELETE FROM clients WHERE client_id=?", (rest[1],)).rowcount
+                n, gone = _revoke_client(con, rest[1], now)
             print(f"client {'removed' if gone else 'not found'}; revoked {n} grant(s)")
             return 0
         if group == "registration" and rest[:1] == ["open"]:
@@ -1073,6 +1151,17 @@ def cli(args: list[str], cfg) -> int:
     return 2
 
 
+def _revoke_client(con, client_id: str, now: float) -> tuple[int, bool]:
+    """Revoke every grant of a client and forget it: (grants revoked, whether
+    the client existed). `client revoke` and `tokens revoke --client`."""
+    n = con.execute("UPDATE families SET revoked=? WHERE client_id=? AND revoked IS NULL",
+                    (now, client_id)).rowcount
+    gone = con.execute("DELETE FROM clients WHERE client_id=?", (client_id,)).rowcount
+    log.info("client %s %s from the CLI; revoked %d grant(s)", client_id,
+             "removed" if gone else "not found", n)
+    return n, bool(gone)
+
+
 def _tokens(con, args: list[str], now: float) -> int:
     if args[:1] == ["list"]:
         rows = con.execute("SELECT * FROM families ORDER BY created").fetchall()
@@ -1091,9 +1180,7 @@ def _tokens(con, args: list[str], now: float) -> int:
                 n = con.execute("UPDATE families SET revoked=? WHERE revoked IS NULL",
                                 (now,)).rowcount
             elif args[1] == "--client" and len(args) == 3:
-                n = con.execute("UPDATE families SET revoked=? WHERE client_id=? AND "
-                                "revoked IS NULL", (now, args[2])).rowcount
-                con.execute("DELETE FROM clients WHERE client_id=?", (args[2],))
+                n, _ = _revoke_client(con, args[2], now)
             else:
                 n = con.execute("UPDATE families SET revoked=? WHERE family=? AND "
                                 "revoked IS NULL", (now, args[1])).rowcount

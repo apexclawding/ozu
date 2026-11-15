@@ -97,10 +97,10 @@ def make_env(tmp_path, monkeypatch, **settings_kw):
     from ozu import mcp_oauth
     gh, clock = FakeGitHub(), Clock()
     settings = mcp_oauth.OAuthSettings(
-        public_url=PUBLIC, github_client_id="fake-gh-client", github_client_secret=GH_SECRET,
+        github_client_id="fake-gh-client", github_client_secret=GH_SECRET,
         github_login=PINNED_LOGIN, github_user_id=PINNED_ID,
-        db_path=tmp_path / "ozu" / "mcp-oauth.db", redirect_uris=[REDIRECT],
-        **{"registration_open": True, **settings_kw})
+        **{"db_path": tmp_path / "ozu" / "mcp-oauth.db", "public_url": PUBLIC, "redirect_uris": [REDIRECT], "registration_open": True,
+           **settings_kw})
     provider = mcp_oauth.GitHubOAuthProvider(settings, static_token=STATIC,
                                              http_factory=gh.factory, clock=clock)
     server = srv.build_server(STATIC, oauth=provider)
@@ -950,8 +950,9 @@ def test_loopback_redirects_are_opt_in(tmp_path, monkeypatch):
         assert "a program on your own computer" in page.text
 
 
-def test_prune_forgets_dead_rows_and_clients(env):
+def test_prune_forgets_dead_rows_and_unapproved_clients(env):
     cid, tok = grant(env)
+    nobody = register(env.c).json()["client_id"]
     env.c.post("/revoke", data={"token": tok["access_token"], "client_id": cid,
                                 "client_secret": ""})
     env.clock.t += 31 * 86400
@@ -961,12 +962,203 @@ def test_prune_forgets_dead_rows_and_clients(env):
     assert con.execute("SELECT COUNT(*) FROM tokens").fetchone()[0] == 0
     assert con.execute("SELECT COUNT(*) FROM families").fetchone()[0] == 0
     assert con.execute("SELECT COUNT(*) FROM codes").fetchone()[0] == 0
-    assert con.execute("SELECT COUNT(*) FROM clients WHERE client_id=?", (cid,)).fetchone()[0] == 0
+    clients = {r[0] for r in con.execute("SELECT client_id FROM clients")}
+    # The approved client stays (it reconnects with its cached id); the one
+    # nobody approved is gone.
+    assert cid in clients and nobody not in clients
+
+
+@pytest.mark.parametrize("ended", ["expired", "revoked_one", "revoked_by_client"])
+def test_an_approved_client_reconnects_after_its_grant_ends(closed, capsys, ended):
+    """Ultrareview 1: the prune deleted a used client once its grant had
+    ended, inside the very /authorize it was reconnecting with, and the owner
+    got "Application unknown" after the GitHub sign-in."""
+    assert closed.mod.cli(["registration", "open", "5"], closed.cfg) == 0
+    cid = register(closed.c).json()["client_id"]
+    _, page = consent_page(closed, cid)
+    code = parse_qs(urlparse(approve(closed, page).headers["location"]).query)["code"][0]
+    tok = token(closed.c, cid, code).json()
+    assert closed.mod.cli(["registration", "close"], closed.cfg) == 0
+    if ended == "expired":
+        closed.clock.t += closed.mod.FAMILY_TTL + 1
+    elif ended == "revoked_one":
+        capsys.readouterr()
+        closed.mod.cli(["tokens", "list"], closed.cfg)
+        family = capsys.readouterr().out.split()[0]
+        assert closed.mod.cli(["tokens", "revoke", family], closed.cfg) == 0
+    else:
+        closed.c.post("/revoke", data={"token": tok["access_token"], "client_id": cid,
+                                       "client_secret": ""})
+    assert closed.c.post("/mcp", json={}, headers={
+        "Authorization": "Bearer " + tok["access_token"]}).status_code == 401
+    closed.c.cookies.clear()
+    _, page = consent_page(closed, cid)
+    assert page.status_code == 200 and "Approve" in page.text, page.text
+    code = parse_qs(urlparse(approve(closed, page).headers["location"]).query)["code"][0]
+    assert token(closed.c, cid, code).status_code == 200
+
+
+def test_a_client_forgotten_mid_authorize_is_refused_before_github(env):
+    """The SDK loads the client, then authorize() prunes: a client that
+    crosses CLIENT_UNUSED_TTL in between is refused at once, not after a
+    GitHub sign-in."""
+    import asyncio
+
+    from mcp.server.auth.provider import AuthorizationParams, AuthorizeError
+    cid = register(env.c).json()["client_id"]
+    client = asyncio.run(env.provider.get_client(cid))
+    env.clock.t += env.mod.CLIENT_UNUSED_TTL + 1
+    params = AuthorizationParams(state="s", scopes=["vault:read"], code_challenge=CHALLENGE,
+                                 redirect_uri=REDIRECT, redirect_uri_provided_explicitly=True,
+                                 resource=RESOURCE)
+    with pytest.raises(AuthorizeError) as exc:
+        asyncio.run(env.provider.authorize(client, params))
+    assert exc.value.error == "unauthorized_client"
+
+
+def test_configured_urls_match_in_their_canonical_form(tmp_path, monkeypatch):
+    """Ultrareview 2: an allowlisted redirect or public URL spelled with an
+    uppercase host, a default port or no trailing slash passed the start-up
+    check and then never matched what the SDK hands back."""
+    e = make_env(tmp_path, monkeypatch, public_url="http://127.0.0.1:8399/",
+                 redirect_uris=["https://Claude.AI:443/api/mcp/auth_callback"])
+    assert e.provider.issuer == PUBLIC
+    with TestClient(e.app, base_url=PUBLIC) as c:
+        e.c = c
+        _, tok = grant(e)
+        assert tok["scope"] == "vault:read"
+        assert e.provider._is_our_resource("HTTP://127.0.0.1:8399/mcp/")
+        assert not e.provider._is_our_resource(RESOURCE + "?x=1")
+    # The config path: the same spellings start, and a URL pydantic cannot
+    # parse is refused at start-up rather than at sign-in.
+    from types import SimpleNamespace
+    cfg = SimpleNamespace(mcp_github_client_id="fake-gh-client", mcp_github_client_secret=GH_SECRET, mcp_github_login=PINNED_LOGIN, mcp_github_user_id=str(PINNED_ID), mcp_public_url_set=True, mcp_public_url="https://OZU.example.com:443", mcp_github_url="https://github.com", mcp_github_api_url="https://api.github.com", mcp_oauth_redirect_uris=["https://claude.ai:443/api/mcp/auth_callback"], mcp_oauth_allow_loopback=False, mcp_oauth_registration="0", mcp_static_remote="0", mcp_grant_hook="", mcp_oauth_db=tmp_path / "x.db", home=tmp_path)
+    s = e.mod.settings_from_config(cfg)
+    assert s.public_url == "https://ozu.example.com"
+    assert s.redirect_uris == [REDIRECT]
+    cfg.mcp_oauth_redirect_uris = ["https://claude.ai:99999/cb"]
+    with pytest.raises(SystemExit) as exc:
+        e.mod.settings_from_config(cfg)
+    assert "OZU_MCP_OAUTH_REDIRECT_URIS" in str(exc.value)
+
+
+def test_a_flood_cannot_cancel_a_sign_in_on_github(env):
+    """Ultrareview 3: anonymous /authorize calls evicted the owner's request
+    while the owner was on GitHub's page."""
+    cid = register(env.c).json()["client_id"]
+    state = to_github(env, cid)
+    for _ in range(env.mod.MAX_PENDING_PER_CLIENT * 3):
+        authorize(env.c, cid)          # a steady flood, none of it opened in a browser
+    page = env.c.get("/oauth/github/callback?" + urlencode({"code": "c", "state": state}))
+    assert page.status_code == 200 and "Approve" in page.text
+    # Requests abandoned on GitHub's page are evicted once the grace is
+    # over, so the cap still frees up; inside it, a new one waits.
+    other = register(env.c).json()["client_id"]
+    for _ in range(env.mod.MAX_PENDING_PER_CLIENT):
+        to_github(env, other)
+    r = authorize(env.c, other)
+    assert parse_qs(urlparse(r.headers["location"]).query)["error"] == [
+        "temporarily_unavailable"]
+    env.clock.t += env.mod.GITHUB_SIGNIN_GRACE + 1
+    assert urlparse(authorize(env.c, other).headers["location"]).path == "/oauth/start"
+
+
+def test_the_refresh_grace_cache_holds_seconds_not_months(env):
+    """Ultrareview 4: only the failure path pruned it, so a healthy client
+    left every plaintext pair it was ever issued in memory."""
+    cid, tok = grant(env)
+    rt = tok["refresh_token"]
+    for _ in range(5):
+        r = refresh(env.c, cid, rt)
+        assert r.status_code == 200
+        rt = r.json()["refresh_token"]
+        env.clock.t += env.mod.REFRESH_GRACE + 1
+    assert len(env.provider._grace) == 1
+
+
+def test_registration_open_works_before_the_server_ever_ran(tmp_path, monkeypatch):
+    """Ultrareview 5: with no state file yet, `registration open` printed
+    "no OAuth state yet", exited 0 and opened nothing."""
+    from types import SimpleNamespace
+
+    from ozu import mcp_oauth
+    cfg = SimpleNamespace(mcp_oauth_db=tmp_path / "fresh" / "mcp-oauth.db",
+                          mcp_oauth_registration="0")
+    assert mcp_oauth.cli(["tokens", "list"], cfg) == 0 and not cfg.mcp_oauth_db.exists()
+    assert mcp_oauth.cli(["registration", "open", "5"], cfg) == 0
+    e = make_env(tmp_path, monkeypatch, registration_open=False, db_path=cfg.mcp_oauth_db)
+    assert e.provider.registration_is_open()
+
+
+def test_a_hook_that_cannot_start_does_not_fail_the_grant(tmp_path, monkeypatch):
+    """Ultrareview 6: Thread.start() raising after the grant committed gave
+    the client a 500, and its retry revoked the grant as a code replay."""
+    import threading
+    e = make_env(tmp_path, monkeypatch, grant_hook=[sys.executable, "-c", "pass"])
+
+    real_start = threading.Thread.start
+
+    def no_hook_thread(self):
+        if self.name == "ozu-grant-hook":
+            raise RuntimeError("can't start new thread")
+        return real_start(self)
+    monkeypatch.setattr(threading.Thread, "start", no_hook_thread)
+    with TestClient(e.app, base_url=PUBLIC) as c:
+        e.c = c
+        _, tok = grant(e)
+        sid = session(c, tok["access_token"])
+        assert not call(c, tok["access_token"], sid, "open_actions")["isError"]
+
+
+def test_an_async_tool_runs_through_register_tool(tmp_path, monkeypatch):
+    """Ultrareview 7: the sync wrapper returned an async tool's coroutine
+    unawaited."""
+    e = make_env(tmp_path, monkeypatch)
+
+    async def slow_search(query: str) -> str:
+        return f"awaited {query}"
+    e.srv.register_tool(e.server, slow_search, access="read")
+    with TestClient(e.app, base_url=PUBLIC) as c:
+        e.c = c
+        _, tok = grant(e)
+        at = tok["access_token"]
+        assert "awaited x" in json.dumps(call(c, at, session(c, at), "slow_search", query="x"))
+
+
+def test_requests_do_not_rerun_the_schema_setup(env, monkeypatch):
+    """Ultrareview 8: every transaction re-ran mkdir, chmod and the schema."""
+    calls = []
+    real = env.mod.connect
+    monkeypatch.setattr(env.mod, "connect", lambda p: calls.append(p) or real(p))
+    _, tok = grant(env)
+    at = tok["access_token"]
+    call(env.c, at, session(env.c, at), "open_actions")
+    assert calls == []
+
+
+def test_the_server_and_the_issuer_share_one_set_of_scopes(env):
+    """Ultrareview 9."""
+    assert env.srv.READ_SCOPE is env.mod.READ_SCOPE
+    assert env.srv.FULL_SCOPE is env.mod.FULL_SCOPE == env.srv.SCOPE
+
+
+def test_both_revoke_commands_revoke_and_forget_the_client(env, capsys):
+    """Ultrareview 10: one helper behind `client revoke` and `tokens revoke
+    --client`."""
+    for argv in (["client", "revoke"], ["tokens", "revoke", "--client"]):
+        cid, tok = grant(env)
+        capsys.readouterr()
+        assert env.mod.cli(argv + [cid], env.cfg) == 0
+        assert "revoked 1 grant(s)" in capsys.readouterr().out
+        assert env.c.post("/mcp", json={}, headers={
+            "Authorization": "Bearer " + tok["access_token"]}).status_code == 401
+        assert authorize(env.c, cid).status_code == 400   # forgotten
 
 
 def test_main_starts_the_edge_with_the_log_filter(monkeypatch, tmp_path):
     """The real start-up path, short of binding a port."""
     import uvicorn
+
     from ozu import mcp_oauth, mcp_server
     seen = {}
     monkeypatch.setattr(uvicorn, "run", lambda app, **kw: seen.update(app=app, **kw))
