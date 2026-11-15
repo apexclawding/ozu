@@ -2,22 +2,6 @@
 
 Open items, each with the reason it is not done yet.
 
-## A weekly project board, rewritten from what actually happened
-
-**Status:** next.
-
-Every week a read-only run rewrites a `MASTER.md` board in the vault: what
-is being built, what went quiet, what is next, citing notes and Builds by
-id. It writes the board from the week's notes, the open actions and a
-development brief, and ink on the Sunday sheet corrects the next edition,
-the same loop as the wiki.
-
-Why it waits: the development brief is the hard part. The obvious source,
-every git repository on the machine and the coding sessions that touched
-them, assumes one person's layout of one box. Before it can ship, the brief
-needs a configuration that says which repositories count and where their
-plans live. The wiki needed neither, which is why it shipped first.
-
 ## Extension seams
 
 **Status:** open.

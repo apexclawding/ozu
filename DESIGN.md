@@ -162,6 +162,22 @@ strike on paper that means anything, so the conventions (6) carry it.
 `wiki_fed` is a ledger (invariant 1). `tests/test_wiki.py` pins the
 allowlist verbatim.
 
+**11f. The board run reads the vault and nothing else, and writes nothing.**
+`board.py` rewrites `MASTER.md` once a week (off unless `OZU_BOARD=1`). The
+run has the wiki run's allowlist, `Read(//<vault>/**)`, and is handed what
+the vault cannot show it inline: a development brief, the open actions and
+the Builds. The brief is facts built with no model call, from the
+repositories `OZU_BOARD_REPOS` names (their commits and plan files, read by
+`git` in the pipeline, never by the run) or from `OZU_BOARD_BRIEF_CMD`'s
+output; the repositories never enter the run's fence. Commit messages and
+plan files are text the owner did not necessarily write (a bot's commit, a
+pasted plan), so the prompt treats them as content, like a transcript. The
+pipeline writes the board, keeps its id and `created`, and links only ids
+that exist. One attempt a day (`board_tried_on`), so a failure does not
+spend a usage window every cycle. Only repositories whose work belongs in
+the personal vault may be named: the board is a personal note (invariant 2).
+`tests/test_board.py` pins the allowlist verbatim.
+
 **12. The vault is an OKF v0.2 bundle, and `okf.py` is the only module that
 knows the format** ([`docs/okf.md`](docs/okf.md)). Every note carries
 `type`, `description`, `generated` and `sources`. `index.md` (in every

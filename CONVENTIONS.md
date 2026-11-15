@@ -81,7 +81,10 @@ never rounds a trip back into the vault.
   to correct it; **draw a line through a claim to drop it** — the one place
   a strike-through means something. Your ink comes back as a note, and the
   next cycle's wiki run applies it: your ink outranks every brief the page
-  was compiled from.
+  was compiled from. When the weekly project board (`MASTER.md`) has a new
+  edition, the sheet opens with its one-line summary and its id
+  (`page: <board id>`); write beside it to correct the board, and the next
+  edition applies it.
 - Underlines and stars alone are emphasis, not content — add words when you
   want a mark to mean something. A strike-through anywhere but the wiki
   sheet is emphasis too.
