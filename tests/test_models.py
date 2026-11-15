@@ -103,7 +103,7 @@ def test_each_run_kind_asks_for_its_own_model_and_the_defaults_are_deliberate(en
     approved on paper, and research argues against the owner's own notes
     from arbitrary web pages — neither is where to save a usage window."""
     assert env.run_models == {"propose": "", "research": "",
-                              "learn": "claude-sonnet-5", "wiki": ""}
+                              "learn": "claude-sonnet-5", "wiki": "", "board": ""}
 
 
 def test_a_run_model_is_an_env_var_away(monkeypatch, tmp_path):

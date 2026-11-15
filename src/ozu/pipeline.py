@@ -12,6 +12,7 @@ Commands:
            queue; `learn probe <urls.txt>` reads each URL and writes nothing
   wiki     status | run | requeue [--all] — the concept pages compiled from
            the vault (`requeue` offers failed notes again; --all recompiles)
+  board    rewrite MASTER.md now if a week old (--force: regardless)
   edition  morning | evening | extra [YYYY-MM-DD] [--force] — build and send
            one edition now (the timers run morning 07:00, evening 20:00;
            one of each per day unless --force). `mail` = `edition extra`.
@@ -20,7 +21,8 @@ Commands:
            `builds simulate --note <id>` a proposal PDF without a vision call;
            `builds reset <id>` hand an exhausted Build a fresh attempt budget;
            `builds split <id> --part f.md ...` carve one Build into several
-  run      pull → ingest → process → claude/research/learn/wiki runs (the 2-hourly job)
+  run      pull → ingest → process → claude/research/learn/wiki runs, and the
+           weekly board (the 2-hourly job)
   requeue  re-read pages the pipeline gave up on: `requeue error` (a failed
            vision call), `requeue skipped [name]` (pages the ink detector
            filed as blank), `requeue <page-id>...`
@@ -137,6 +139,11 @@ def _nightly(cfg, agent, builds, indexer, ingest, understand, vault) -> None:
         wiki.work_pending()
     except Exception:
         logger.warning("wiki run failed, run continues", exc_info=True)
+    try:  # weekly; a no-op until the board is BOARD_DAYS old (and OZU_BOARD=1)
+        from . import board
+        board.run_if_due()
+    except Exception:
+        logger.warning("board run failed, run continues", exc_info=True)
     _catch_up(logger)
 
 
@@ -213,6 +220,13 @@ def main() -> None:
         else:
             print("usage: ozu wiki [status | run | requeue [--all]]")
             sys.exit(1)
+    elif cmd == "board":
+        from . import board
+        with hold_lock(wait=True) as held:
+            assert held
+            wrote = board.run(force="--force" in sys.argv[2:])
+        print("board rewritten" if wrote else
+              f"board is current (last edition {board.last_edition()}); --force to rewrite")
     elif cmd in ("edition", "mail"):
         import datetime as _dt
         from . import edition

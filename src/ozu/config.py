@@ -173,6 +173,13 @@ class Config:
         # batch every two hours.
         self.max_wiki_notes = int(os.environ.get("OZU_MAX_WIKI_NOTES", "6"))
         self.max_wiki_pages = int(os.environ.get("OZU_MAX_WIKI_PAGES", "5"))
+        # The weekly board (board.py): MASTER.md rewritten once a week. Off
+        # unless OZU_BOARD=1. Its development brief comes from the
+        # repositories named here (`name=path[#plan|plan],…`), or from a
+        # command whose output is the brief; board.py parses both.
+        self.board = os.environ.get("OZU_BOARD", "0")
+        self.board_repos = os.environ.get("OZU_BOARD_REPOS", "")
+        self.board_brief_cmd = os.environ.get("OZU_BOARD_BRIEF_CMD", "")
         self.claude_timeout = int(os.environ.get("OZU_CLAUDE_TIMEOUT", "1800"))
         # Headless run kinds → the CLI model each asks for. These bill the
         # box's claude.ai login, not the API key (invariant 7), so the choice
@@ -184,7 +191,8 @@ class Config:
         self.run_models = {
             kind: os.environ.get(f"OZU_{kind.upper()}_MODEL", default)
             for kind, default in (("propose", ""), ("research", ""),
-                                  ("learn", "claude-sonnet-5"), ("wiki", ""))
+                                  ("learn", "claude-sonnet-5"), ("wiki", ""),
+                                  ("board", ""))
         }
         # Model tags the owner can write beside @approved, → the CLI ids they
         # mean. The default (no tag) is Opus. Per-model timeouts because a

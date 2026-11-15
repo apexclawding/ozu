@@ -381,12 +381,15 @@ def gather_sheet(con, today: dt.date) -> dict | None:
     changed.sort(key=lambda c: (not c["new"], c["updated"], c["id"]), reverse=False)
     more = max(0, len(changed) - SHEET_PAGES)
 
+    from . import board
+    board_line = board.sheet_entry(through)   # a new edition of MASTER.md
+
     errors = con.execute("SELECT COUNT(*) c FROM wiki_fed WHERE outcome='error'"
                          ).fetchone()["c"]
-    if not changed and not errors:
+    if not changed and not board_line and not errors:
         return None
     return {"date": today.isoformat(), "pages": changed[:SHEET_PAGES], "more": more,
-            "errors": errors, "total": len(pages())}
+            "board": board_line, "errors": errors, "total": len(pages())}
 
 
 def mark_sheet_sent(con) -> None:

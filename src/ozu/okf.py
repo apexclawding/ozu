@@ -62,6 +62,7 @@ TYPE_BY_SOURCE = {
     "claude": "Build Report",    # companion of a @claude work run
     "build": "Build",            # a paper-approved Build (proposal → PR)
     "wiki": "Concept",           # a compiled concept page (wiki.py)
+    "board": "Board",            # the weekly project board, MASTER.md (board.py)
 }
 DEFAULT_TYPE = "Note"
 # Root-level documents the pipeline knows by name.
@@ -492,7 +493,9 @@ YAML frontmatter, organised so an agent can find what it needs in two reads.
 2. That folder's `index.md` lists every note there, newest first, grouped by
    `type`, each with a one-line description. Open only the 1–3 that fit.
 3. `log.md` is the chronological history — what was created or updated when.
-4. `topics/wiki/` holds the concept pages (`type: Concept`): what is known
+4. `MASTER.md`, when there is one, is the weekly project board: what is
+   being built, what went quiet, what is next.
+5. `topics/wiki/` holds the concept pages (`type: Concept`): what is known
    about one subject across every note that touched it, each claim citing
    its sources. Start there for "what do I know about X"; open the cited
    notes for the detail.

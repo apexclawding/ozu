@@ -307,6 +307,12 @@ def _wiki_body(doc: Document, data: dict) -> None:
     on the right page; claims print without their citation runs (those stay
     in the vault). No `☐` anywhere — a correction is not an action."""
     doc.para(WIKI_INTRO, cls="summary")
+    board = data.get("board")
+    if board:
+        doc.note("The board", f"new edition {board['updated']}")
+        doc.para(f"page: {board['id']}", cls="faint")
+        doc.markdown(board["description"])
+        doc.rules(1)
     for p in data.get("pages") or []:
         doc.note(p["title"], ("new page" if p["new"] else "updated") + f" · {p['updated']}")
         doc.para(f"page: {p['id']}", cls="faint")
@@ -333,7 +339,8 @@ def _wiki_line(data: dict) -> str:
     pages = data.get("pages") or []
     new = sum(1 for p in pages if p["new"])
     bits = [f"{new} new" if new else "",
-            f"{len(pages) - new} updated" if len(pages) - new else ""]
+            f"{len(pages) - new} updated" if len(pages) - new else "",
+            "the board" if data.get("board") else ""]
     return " · ".join(b for b in bits if b) or "nothing changed"
 
 
