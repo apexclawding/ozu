@@ -21,6 +21,7 @@ OAuth tokens get `vault:read` only; the static bearer keeps every tool.
 from __future__ import annotations
 
 import functools
+import inspect
 import os
 import secrets
 import sys
@@ -34,8 +35,11 @@ except ImportError:  # mcp SDK 2.x renamed the high-level server
 
 from .config import canonical_topic, get_config
 from . import db, vault as vault_mod
+# One definition of each scope, shared with the token issuer: stdlib-only
+# imports at mcp_oauth's top level, so this costs nothing when OAuth is off.
+from .mcp_oauth import FULL_SCOPE, READ_SCOPE
 
-SCOPE = "ozu"
+SCOPE = FULL_SCOPE
 
 # Tools are collected here and registered onto a server built in main(),
 # because auth is a constructor argument: the stdio server must not demand a
@@ -53,8 +57,6 @@ def _tool(fn):
 # included, needs the static bearer's scope, which OAuth never issues. The
 # class is recorded per *registered* name, by register_tool, and in OAuth
 # mode the server refuses to start if any registered tool has no class.
-FULL_SCOPE = SCOPE            # == mcp_oauth.FULL_SCOPE
-READ_SCOPE = "vault:read"     # == mcp_oauth.READ_SCOPE
 READ_TOOLS = frozenset({"search_notes", "get_note", "graph_neighbors", "timeline",
                         "open_actions"})
 ACCESS = ("read", "write")
@@ -109,15 +111,27 @@ def register_tool(server, fn, *, access: str, name: str | None = None):
     _access(server)[name] = access
     auth_on = server.__dict__.get("_ozu_auth_on", False)
 
-    @functools.wraps(fn)
-    def wrapper(*args, **kwargs):
+    def check():
         scopes = _token_scopes()
         if scopes is None and auth_on:
             raise _Refused("no access token on this request")
         if scopes is not None and not _allowed(server, name, scopes):
             raise _Refused(f"{name} requires scope "
                            f"{READ_SCOPE if access == 'read' else FULL_SCOPE}")
-        return fn(*args, **kwargs)
+
+    # The SDK awaits a tool only if it is a coroutine function, and
+    # functools.wraps does not make a sync wrapper one: an `async def` tool
+    # needs an async wrapper, or its coroutine is returned unawaited.
+    if inspect.iscoroutinefunction(fn):
+        @functools.wraps(fn)
+        async def wrapper(*args, **kwargs):
+            check()
+            return await fn(*args, **kwargs)
+    else:
+        @functools.wraps(fn)
+        def wrapper(*args, **kwargs):
+            check()
+            return fn(*args, **kwargs)
     server.tool(name=name)(wrapper)
     return wrapper
 

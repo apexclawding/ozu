@@ -183,7 +183,10 @@ that can no longer be used are pruned on every authorization, registration
 and grant: pending authorizations at expiry, codes an hour after expiry
 (replay detection), tokens at expiry or with their grant, revoked or ended
 grants after 30 days (the CLI lists them until then), and dynamically
-registered clients with no live grant left.
+registered clients nobody ever approved. A client the owner approved stays
+when its grant ends or is revoked, so it can reconnect with the client id it
+has cached (registration is closed by default, so it could not register
+again); `ozu mcp client revoke` removes one.
 
 **No new dependency.** The SDK supplies the OAuth endpoints; the HTTP
 client the SDK itself depends on (`httpx2` from mcp 2.x, an API-compatible
@@ -205,9 +208,11 @@ exception: the **same client** presenting the **same** just-rotated token
 again within `REFRESH_GRACE` (5 s) gets the **same** new pair back (a client
 with two requests in flight; the review proved sixteen parallel refreshes
 revoked the grant). The pair is held in process memory only, never on disk,
-and is dropped on any revocation. That is the whole weakening: inside those
-5 s, a thief who holds the old token *and* the client id receives the pair
-the legitimate client also holds instead of triggering the revocation; after
+is dropped on any revocation, and an expired one is dropped on the next
+rotation, so the cache holds the last few seconds of refreshes. That is
+the whole weakening: inside those 5 s, a thief who holds the old token *and*
+the client id receives the pair the legitimate client also holds instead of
+triggering the revocation; after
 them, reuse revokes as before. Another client id inside the window gets
 `invalid_grant` and revokes nothing.
 
@@ -216,7 +221,9 @@ registered client is just a name and a redirect list. It can obtain a code
 only through a consent that the pinned GitHub account approves in a browser.
 On top of that:
 
-- redirect URIs must be on an allowlist, matched exactly:
+- redirect URIs must be on an allowlist, matched exactly after both sides
+  are put in the canonical form the SDK uses (lowercase host, no default
+  port, `/` on a bare origin), so the configured spelling does not matter:
   `OZU_MCP_OAUTH_REDIRECT_URIS` (default: the two claude.ai/claude.com
   callbacks); loopback `http://127.0.0.1|localhost|[::1]:<port>/...` only
   with `OZU_MCP_OAUTH_ALLOW_LOOPBACK=1` (Claude Code). The allowlist is
@@ -240,11 +247,17 @@ may have at most 3 pending authorizations per 10 minutes; all clients that
 have *never* obtained a token share a cap of 30. A client that has (and
 every pre-registered client) is exempt from the shared cap, so a flood of
 fresh clients cannot lock the owner's own connector out of signing in.
-At its own cap a client is not refused: its oldest request that nobody has
-signed in for is dropped to make room. A client id is public, so refusing
-would let three anonymous `/authorize` calls every ten minutes keep the
-owner out. A request that reached the consent page is never dropped; a
-client holding three of those is refused (`temporarily_unavailable`).
+At its own cap a client is not refused: a request is dropped to make room,
+the oldest one nobody opened in a browser, else the oldest one sent to
+GitHub more than 2 minutes ago (`GITHUB_SIGNIN_GRACE`). A client id is
+public, so refusing would let three anonymous `/authorize` calls every ten
+minutes keep the owner out, and dropping any request would let a steady
+flood cancel the owner's sign-in while they are on GitHub's page. A request
+that reached the consent page is never dropped. A client holding three
+requests that cannot be dropped is refused (`temporarily_unavailable`):
+that leaves one way to delay a Connect, someone who knows the client id
+sending three requests on to GitHub every 2 minutes; it grants nothing,
+and a sign-in already under way is never cancelled.
 
 Client ID Metadata Documents are not supported in v1: they make the server
 fetch an arbitrary URL (SSRF on a box that serves other loopback services),
