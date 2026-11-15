@@ -151,6 +151,7 @@ def test_board_rewrites_master_when_a_week_old(env, monkeypatch, tmp_path):
     assert {r["dst"] for r in con.execute("SELECT dst FROM edges WHERE src=?",
                                           ("20260830-my-own-board-id",))} == {"20260901-ink-page"}
     assert okf.check(env.vault_dir)[0] == []
+    assert "Concept, Board, Guide" in okf.GUIDE                 # the guide names the type
 
 
 def test_a_first_board_gets_the_default_id(env, monkeypatch):
