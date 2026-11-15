@@ -157,7 +157,12 @@ lacks the secret. Dynamic registration is off
 `registration_endpoint` and `/register` answers 404. It can be opened
 deliberately: always (`OZU_MCP_OAUTH_REGISTRATION=1`), or for a window that
 closes by itself, `ozu mcp registration open [MINUTES]` (default 10, at most
-60; `close` and `status` too).
+60; `close` and `status` too). The window bounds use as well as creation: a
+dynamically registered client that nobody has approved yet is refused at
+`/authorize` (`unauthorized_client`) once registration is closed, so a
+stranger who registered during the window cannot show a consent page after
+it. A request already in flight completes, and a client that obtained a
+grant keeps working.
 
 The client secret is **stored as issued**, in the 0600 state file: the SDK's
 client authenticator compares the stored value with `hmac.compare_digest`,
@@ -235,6 +240,11 @@ may have at most 3 pending authorizations per 10 minutes; all clients that
 have *never* obtained a token share a cap of 30. A client that has (and
 every pre-registered client) is exempt from the shared cap, so a flood of
 fresh clients cannot lock the owner's own connector out of signing in.
+At its own cap a client is not refused: its oldest request that nobody has
+signed in for is dropped to make room. A client id is public, so refusing
+would let three anonymous `/authorize` calls every ten minutes keep the
+owner out. A request that reached the consent page is never dropped; a
+client holding three of those is refused (`temporarily_unavailable`).
 
 Client ID Metadata Documents are not supported in v1: they make the server
 fetch an arbitrary URL (SSRF on a box that serves other loopback services),
@@ -282,6 +292,9 @@ a `register(server, ...)` hook calls
 of `server.tool()`. With a bare `server.tool()` the server still starts and
 serves the tool when OAuth is off (unchanged), and refuses to start in OAuth
 mode, naming the tool: never silently open, never silently fatal.
+A name can be registered once: a second `register_tool` under an existing
+name raises, because the SDK would keep the first tool and only its class
+would change.
 
 **The wall is untouched.** OAuth adds no tool and no path into the data: an
 OAuth call runs the very same tool bodies after the scope check, so

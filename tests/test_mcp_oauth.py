@@ -778,8 +778,10 @@ def test_a_failing_or_slow_hook_does_not_touch_the_grant(tmp_path, monkeypatch, 
 def test_pending_limits_refuse_cleanly_and_spare_a_trusted_client(env, monkeypatch):
     """Finding 4 (the refusal was a FrozenInstanceError -> server_error) and 5."""
     cid = register(env.c).json()["client_id"]
+    # Requests that reached the consent page are never evicted, so a client
+    # holding its cap of those is refused, cleanly.
     for _ in range(env.mod.MAX_PENDING_PER_CLIENT):
-        assert authorize(env.c, cid).status_code == 302
+        consent_page(env, cid)
     r = authorize(env.c, cid)
     q = parse_qs(urlparse(r.headers["location"]).query)
     assert q["error"] == ["temporarily_unavailable"] and q["state"] == ["client-st"]
@@ -795,6 +797,65 @@ def test_pending_limits_refuse_cleanly_and_spare_a_trusted_client(env, monkeypat
     r = authorize(env.c, fresh)
     assert parse_qs(urlparse(r.headers["location"]).query)["error"] == ["temporarily_unavailable"]
     assert urlparse(authorize(env.c, owner).headers["location"]).path == "/oauth/start"
+
+
+def test_anonymous_authorize_calls_cannot_lock_the_owner_out(env):
+    """Second review, B: a client id is public, and three /authorize calls with
+    no cookie and no sign-in filled the client's cap for ten minutes."""
+    cid = register(env.c).json()["client_id"]
+    first = urlparse(authorize(env.c, cid).headers["location"])
+    for _ in range(env.mod.MAX_PENDING_PER_CLIENT - 1):
+        authorize(env.c, cid)
+    # The owner's Connect still goes through, all the way to a token ...
+    state = to_github(env, cid)
+    page = env.c.get("/oauth/github/callback?" + urlencode({"code": "c", "state": state}))
+    assert page.status_code == 200 and "Approve" in page.text
+    # ... the oldest unsigned request paid for it ...
+    r = env.c.get(first.path + "?" + first.query, follow_redirects=False)
+    assert r.status_code != 302
+    # ... and a flood cannot evict a request the owner has signed in for.
+    for _ in range(env.mod.MAX_PENDING_PER_CLIENT * 2):
+        authorize(env.c, cid)
+    assert approve(env, page).status_code in (302, 303)
+
+
+def test_a_client_nobody_approved_dies_with_the_registration_window(closed):
+    """Second review, C: the window bounded creating a client, not using it."""
+    assert closed.mod.cli(["registration", "open", "5"], closed.cfg) == 0
+    stranger = register(closed.c).json()["client_id"]
+    mine = register(closed.c).json()["client_id"]
+    assert urlparse(authorize(closed.c, stranger).headers["location"]).path == "/oauth/start"
+    closed.c.cookies.clear()
+    state = to_github(closed, mine)
+    page = closed.c.get("/oauth/github/callback?" + urlencode({"code": "c", "state": state}))
+    closed.clock.t += 5 * 60 - 10
+    code = parse_qs(urlparse(approve(closed, page).headers["location"]).query)["code"][0]
+    closed.clock.t += 20
+    r = authorize(closed.c, stranger)
+    q = parse_qs(urlparse(r.headers["location"]).query)
+    assert q["error"] == ["unauthorized_client"]
+    # A request approved inside the window still completes after it closes,
+    # and the client that got a grant keeps working.
+    assert token(closed.c, mine, code).status_code == 200
+    assert urlparse(authorize(closed.c, mine).headers["location"]).path == "/oauth/start"
+
+
+def test_a_tool_name_cannot_be_registered_twice(tmp_path, monkeypatch):
+    """Second review, A: the SDK keeps the first tool under a name, so a second
+    registration only changed the class and a write tool was served as read."""
+    e = make_env(tmp_path, monkeypatch)
+
+    def capture(text: str) -> str:
+        return "read-only lookalike"
+    with pytest.raises(ValueError):
+        e.srv.register_tool(e.server, capture, access="read")
+    with pytest.raises(ValueError):
+        e.srv.register_tool(e.server, capture, access="write", name="capture")
+    with TestClient(e.app, base_url=PUBLIC) as c:
+        e.c = c
+        _, tok = grant(e)
+        at = tok["access_token"]
+        assert call(c, at, session(c, at), "capture", text="x")["isError"]
 
 
 def test_static_bearer_is_refused_through_the_proxy(env):

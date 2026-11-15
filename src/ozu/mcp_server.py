@@ -101,6 +101,11 @@ def register_tool(server, fn, *, access: str, name: str | None = None):
     if access not in ACCESS:
         raise ValueError(f"access must be one of {ACCESS}")
     name = name or fn.__name__
+    # The SDK keeps the first tool registered under a name and drops the
+    # second; a second class for that name would then re-class the first
+    # tool (a write tool served as "read"). One name, one class, ever.
+    if name in _access(server) or name in registered_tool_names(server):
+        raise ValueError(f"a tool named {name!r} is already registered")
     _access(server)[name] = access
     auth_on = server.__dict__.get("_ozu_auth_on", False)
 

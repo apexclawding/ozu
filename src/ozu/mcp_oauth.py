@@ -375,20 +375,40 @@ class GitHubOAuthProvider:
             raise AuthorizeError("invalid_target", "resource is not this server")
         now = self._now()
         txn = secrets.token_urlsafe(32)
+        reg_open = self.registration_is_open()
+        closed = False
         with self._db() as con:
             self._prune(con)
             since = now - PENDING_TTL
+            trusted = con.execute("SELECT used, kind FROM clients WHERE client_id=?",
+                                  (client.client_id,)).fetchone()
+            # A registration window bounds when a client may be created; this
+            # bounds how long one nobody ever approved stays usable. Without
+            # it a client registered during a ten-minute window could show
+            # the owner a consent page for the rest of its hour.
+            closed = bool(trusted and trusted["kind"] == "dcr" and not trusted["used"]
+                          and not reg_open)
+            # At its cap a client loses its oldest request that nobody has
+            # signed in for, instead of being refused: a client id is public,
+            # and three anonymous /authorize calls every ten minutes would
+            # otherwise keep the owner from ever connecting. A request that
+            # reached the consent page (the pinned account signed in) is
+            # never evicted.
             mine = con.execute("SELECT COUNT(*) FROM pending WHERE client_id=? AND created>?",
                                (client.client_id, since)).fetchone()[0]
-            trusted = con.execute("SELECT used FROM clients WHERE client_id=?",
-                                  (client.client_id,)).fetchone()
+            if mine >= MAX_PENDING_PER_CLIENT and not closed:
+                cur = con.execute(
+                    "DELETE FROM pending WHERE txn=(SELECT txn FROM pending WHERE client_id=?"
+                    " AND stage IN ('new','github') ORDER BY created, rowid LIMIT 1)",
+                    (client.client_id,))
+                mine -= cur.rowcount
             # A client that already obtained a token (or a pre-registered one)
             # is exempt from the global cap, so a flood of fresh clients cannot
             # lock the owner's own connector out; every client has its own cap.
             others = 0 if (trusted and trusted["used"]) else con.execute(
                 "SELECT COUNT(*) FROM pending WHERE created>?", (since,)).fetchone()[0]
             full = mine >= MAX_PENDING_PER_CLIENT or others >= MAX_PENDING
-            if not full:
+            if not full and not closed:
                 con.execute(
                     "INSERT INTO pending(txn, client_id, params, stage, created, expires)"
                     " VALUES(?,?,?,?,?,?)",
@@ -398,7 +418,12 @@ class GitHubOAuthProvider:
                         "explicit": params.redirect_uri_provided_explicitly,
                         "resource": self.resource,
                     }), "new", now, now + PENDING_TTL))
-        if full:  # raised outside the transaction: the SDK's errors are frozen
+        if closed:  # raised outside the transaction: the SDK's errors are frozen
+            log.warning("authorization refused: client %s was never approved and "
+                        "registration is closed", client.client_id)
+            raise AuthorizeError("unauthorized_client",
+                                 "this client was never approved and registration is closed")
+        if full:
             log.warning("authorization refused: too many pending")
             raise AuthorizeError("temporarily_unavailable", "too many pending authorizations")
         return f"{self.issuer}/oauth/start?txn={txn}"
