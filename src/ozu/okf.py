@@ -512,7 +512,7 @@ exactly as it appears in the frontmatter, which is also the filename without
 ## What the frontmatter promises
 
 - `type` — the kind of document: Note (a handwritten page), Voice Memo,
-  Transcript, Learning, Research, Build, Build Report, Concept, Guide.
+  Transcript, Learning, Research, Build, Build Report, Concept, Board, Guide.
 - `description` — one sentence; the index line.
 - `generated` — who produced the content and when. Almost everything here
   is machine-written from the owner's own ink or recordings; `sources` says
