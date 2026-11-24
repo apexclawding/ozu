@@ -221,12 +221,27 @@ def _mail_body(doc: Document, data: dict) -> None:
                 doc.action(a)
             if item.get("image"):
                 doc.image(cfg.vault_dir / str(item["image"]))
-                doc.para((item.get("body") or "")[:500], cls="summary")
+                _page_text(doc, item.get("body") or "")
 
     if data.get("research"):
         doc.heading("Research briefs · sent as their own documents")
         for item in data["research"]:
             doc.para(item["title"])
+
+
+def _page_text(doc: Document, body: str) -> None:
+    """A note's text under its page image, whole and line by line: the
+    reader checks it against the ink, so a cut is a claim nobody can check.
+    It was cut at 500 characters here and 600 under "Needs review", mid-word,
+    and two in three of these notes are longer than that. The title and the
+    Summary line are already printed above it and are skipped. Each line is a
+    plain paragraph, never Markdown, so a transcribed `[ ]` prints as the
+    characters it is and never as a box (invariant 5)."""
+    for line in body.strip().splitlines():
+        s = line.strip()
+        if not s or s.startswith("# ") or s.startswith("> Summary:"):
+            continue
+        doc.para(s, cls="summary")
 
 
 def _mail_line(data: dict) -> str:
@@ -454,7 +469,7 @@ def _digest_body(doc: Document, data: dict) -> None:
             if fm.get("image"):
                 doc.image(cfg.vault_dir / str(fm["image"]))
             if body:
-                doc.para(body.strip()[:600], cls="summary")
+                _page_text(doc, body)
 
     if data["gem"]:
         g = data["gem"]

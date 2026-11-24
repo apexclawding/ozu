@@ -358,7 +358,10 @@ def write_learning_note(*, source: dict, report: str, video: dict) -> str:
     slug = _slugify(source["title"], suffix="-learning")
     note_id, path = _unique_id(cfg.vault_dir, topic_dir, slug, today)
     title = f"Learning: {source['title']}"
-    summary = (_first_takeaway(report) or f"Learning brief from {source['title']}")[:200]
+    # Whole, never cut: the first takeaway is one sentence or two (median
+    # 194 characters, longest 684 over 187 briefs), and a cut at 200 left 58
+    # of them ending mid-word in every place the description is read.
+    summary = _first_takeaway(report) or f"Learning brief from {source['title']}"
 
     # an article (articles.py) names its site and reading time where a video
     # names its channel and length, so the sheet's line reads the same for both
