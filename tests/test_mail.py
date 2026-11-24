@@ -177,3 +177,23 @@ def test_send_logs_the_file_never_the_address(env, monkeypatch, tmp_path, caplog
     assert "Ozu Morning 2026-10-21.pdf sent to Send-to-Kindle" in caplog.text
     assert "someone_x1" not in caplog.text
 
+
+
+def test_the_text_under_a_page_image_is_printed_whole(env, tmp_path):
+    """It was cut at 500 characters (600 under "Needs review"), mid-word;
+    two in three of these notes are longer. Printed line by line, the title
+    and Summary skipped (printed above it), and never as Markdown."""
+    from ozu import digest_pdf
+    last = "and the qualifying journey runs from Fri 18 Jun to Sun 20 Jun."
+    lines = [f"• Line {i}: bring the forms, the helmet and the water bottle to school." for i in range(12)]
+    body = "# School note\n\n> Summary: short\n\n" + "\n".join(lines) + "\n- [ ] " + last
+    assert len(body) > 600
+    out = digest_pdf.build_mail_pdf({"stamp": "2026-11-24 12:00", "plain": [{
+        "id": "n1", "title": "School note", "topic": "school", "summary": "short",
+        "actions": [], "image": "assets/missing.png", "body": body}]}, tmp_path / "m.pdf")
+    doc = fitz.open(out)
+    text = "".join(textlayer.extract(p) for p in doc)
+    doc.close()
+    assert last in " ".join(text.split())
+    assert "Line 11:" in text and "# School note" not in text
+    assert "[ ] and the qualifying" in " ".join(text.split())   # the characters, not a box

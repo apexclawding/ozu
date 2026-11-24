@@ -153,3 +153,21 @@ def test_catch_up_without_a_git_vault_does_nothing(env, monkeypatch):
     _page(env, monkeypatch, [], "")
     shutil.rmtree(env.vault_dir / ".git")      # a vault copied off the box
     assert indexer.catch_up() is False
+
+
+def test_a_learning_note_keeps_its_whole_first_takeaway(env, monkeypatch):
+    """It was cut at 200 characters, mid-word, in the description and the
+    Summary line alike."""
+    from ozu import okf, vault
+    note = _page(env, monkeypatch, [], "")
+    source = {"id": note.stem, "title": "Kettle freemium pricing", "topic": "kettle",
+              "path": str(note)}
+    takeaway = ("Price the kettle on what a household saves, not on what it costs to make: "
+                * 4).strip()
+    assert len(takeaway) > 200
+    nid = vault.write_learning_note(source=source, report=f"## Takeaways\n- {takeaway}\n- two",
+                                    video={"url": "https://example.com/v", "channel": "c"})
+    path = next(env.vault_dir.rglob(f"{nid}.md"))
+    fm, body = okf.parse_frontmatter(path.read_text())
+    assert fm["description"] == takeaway
+    assert f"> Summary: {takeaway}" in body
