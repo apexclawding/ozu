@@ -1298,3 +1298,72 @@ def test_a_split_survives_ozu_index(env, monkeypatch, sent, runs, tmp_path):
     rows = {r["id"]: r["status"] for r in
             db.connect(env.db_path).execute("SELECT id, status FROM builds")}
     assert rows[bid] == "split" and rows[made[0]] == "proposed"
+
+
+def _built_with_pr(env, monkeypatch, sent, runs, tmp_path, number=7):
+    """An executed Build whose PR is open on GitHub, as a real run leaves it."""
+    from ozu import builds, db
+    bid, _ = make_build(env, monkeypatch, sent, runs, tmp_path)
+    annotate(env, monkeypatch, bid, annotation_result(
+        "approve", build_ref=bid, transcription="@approved"))
+    assert builds.run_pending() == 1
+    path = env.vault_dir / "topics" / "kettle" / f"{bid}.md"
+    b = builds.load_build(path)
+    b["fm"]["build_pr"] = f"https://github.com/owner/kettle/pull/{number}"
+    builds._save_build(b, "test: the run opened a PR")
+    con = db.connect(env.db_path)
+    con.execute("UPDATE actions SET text=? WHERE note_id=?",
+                (f"Review PR #{number} — Weekly", bid))
+    con.commit()
+    monkeypatch.setattr(builds.get_config(), "github_token", "t")
+    return bid, path, con
+
+
+def test_a_merged_pr_is_reported_once_and_closes_its_review_box(
+        env, monkeypatch, sent, runs, tmp_path):
+    from ozu import builds, db
+    bid, path, con = _built_with_pr(env, monkeypatch, sent, runs, tmp_path)
+    asked = []
+
+    def github(repo, n, merged=None):
+        asked.append((repo, n))
+        return {"state": "closed" if merged else "open", "merged_at": merged}
+
+    # still open: nothing changes
+    assert builds.sweep_merged(con, fetch=github) == 0
+    assert asked == [("owner/kettle", 7)]
+    assert con.execute("SELECT done FROM actions WHERE note_id=?", (bid,)).fetchone()[0] == 0
+
+    # merged: the note first, then the box, then one line for the edition
+    merged = lambda repo, n: github(repo, n, "2026-11-22T18:30:06Z")  # noqa: E731
+    assert builds.sweep_merged(con, fetch=merged) == 1
+    text = path.read_text()
+    assert "build_merged: 2026-11-22" in text and "build: done" in text
+    assert "### merged — 2026-11-22 · PR #7 on GitHub" in text
+    assert "merged 2026-11-22" in builds.load_build(path)["fm"]["description"]
+    assert con.execute("SELECT done FROM actions WHERE note_id=?", (bid,)).fetchone()[0] == 1
+    lines = [e["line"] for e in db.unreported_build_events(con)]
+    assert any("PR #7 merged on 2026-11-22" in ln and "Review PR #7" in ln for ln in lines)
+
+    # the box is closed, so GitHub is not asked again and nothing repeats
+    asked.clear()
+    assert builds.sweep_merged(con, fetch=merged) == 0 and asked == []
+
+
+def test_the_merge_sweep_never_stops_an_edition(env, monkeypatch, sent, runs, tmp_path):
+    from ozu import builds, edition
+    bid, path, con = _built_with_pr(env, monkeypatch, sent, runs, tmp_path)
+
+    def down(repo, n):
+        raise OSError("network is unreachable")
+    assert builds.sweep_merged(con, fetch=down) == 0
+    monkeypatch.setattr(builds, "_pr_state", down)
+    monkeypatch.setattr(builds, "sweep_merged", lambda con: 1 / 0)
+    assert edition.send("extra") is True
+
+
+def test_no_token_asks_github_nothing(env, monkeypatch, sent, runs, tmp_path):
+    from ozu import builds
+    bid, path, con = _built_with_pr(env, monkeypatch, sent, runs, tmp_path)
+    monkeypatch.setattr(builds.get_config(), "github_token", "")
+    assert builds.sweep_merged(con, fetch=lambda *a: 1 / 0) == 0
