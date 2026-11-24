@@ -9,7 +9,7 @@ in ink — @input folds their answers into a new revision, @approved (optionally
 @drop closes it. Every state of that conversation lives in one vault note,
 `topics/<project>/<build-id>.md`, whose frontmatter (`build:`, `build_rev`,
 `build_model`, `build_branch`, `build_pr`, `build_pending`, `build_attempts`,
-`build_deferrals`) is the ledger — the `builds` table in ozu.db is derived
+`build_deferrals`, `build_merged`) is the ledger — the `builds` table in ozu.db is derived
 from it and rebuilt by `ozu index`, never the other way around (invariants 1
 and 7).
 
@@ -34,10 +34,12 @@ from __future__ import annotations
 
 import datetime as dt
 import functools
+import json
 import logging
 import os
 import re
 import shutil
+import urllib.request
 from pathlib import Path
 
 from .config import brand, canonical_topic, get_config, incoming_prefix_re
@@ -295,6 +297,9 @@ def _save_build(build: dict, msg: str) -> None:
     fm["description"] = _DESCRIPTION.get(str(fm.get("build")), "Build").format(
         rev=fm.get("build_rev", 1), model=fm.get("build_model") or "opus",
         attempts=_attempts(fm), id=fm.get("id"))
+    if fm.get("build") == "done" and fm.get("build_merged"):
+        fm["description"] = (f"Built with {fm.get('build_model') or 'opus'}, "
+                             f"merged {fm['build_merged']}")
     body = _SUMMARY_LINE.sub(f"> Summary: {fm['description']}", build["body"],
                              count=1)
     build["body"] = body
@@ -1020,6 +1025,70 @@ def _execute(con, row) -> None:
     # is now `done` and not yet in `mailed`, which is exactly what
     # edition._results() looks for. No document of its own any more.
     log.info("build %s executed: pushed=%s pr=%s", bid, pushed, review_url)
+
+
+_PR_URL = re.compile(r"^https://github\.com/([\w.-]+/[\w.-]+)/pull/(\d+)$")
+
+
+def _pr_state(repo: str, number: int) -> dict:
+    """GitHub's view of one pull request (`merged_at`, `state`). Same token
+    and headers as `agent._open_pr`; a read, never a write."""
+    req = urllib.request.Request(
+        f"https://api.github.com/repos/{repo}/pulls/{number}",
+        headers={"Authorization": f"Bearer {get_config().github_token}",
+                 "Accept": "application/vnd.github+json", "User-Agent": "ozu"})
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        return json.loads(resp.read())
+
+
+def sweep_merged(con, fetch=_pr_state) -> int:
+    """A Build's PR merged on GitHub: say so in the next edition and close
+    its "Review PR #N" box. Runs once per edition, before it is gathered.
+
+    Only Builds whose review action is still open are asked about, so a PR
+    reviewed and ticked on paper costs nothing and is never announced twice.
+    A merge is written to the Build note first (`build_merged`, one decision
+    history line, invariant 1), then the action closes and a mail event
+    carries the line to paper. Closing here is the owner's choice
+    (2026-11-24): a merge is a person's act on GitHub, and closing the box
+    triggers nothing else, unlike a site-audit fix (D-11), where a closed
+    action is a change applied that night. No token, a network error or a
+    PR GitHub will not show: nothing changes and the edition goes out."""
+    cfg = get_config()
+    if not cfg.github_token:
+        return 0
+    rows = con.execute(
+        "SELECT b.id, b.path, b.pr, b.title, a.id AS action_id, a.text"
+        " FROM builds b JOIN actions a ON a.note_id = b.id AND a.done = 0"
+        " WHERE b.status = 'done' AND a.text LIKE 'Review PR #%'"
+        " ORDER BY b.id").fetchall()
+    merged = 0
+    for r in rows:
+        m = _PR_URL.match(r["pr"] or "")
+        path = Path(r["path"])
+        if not m or not path.exists():
+            continue
+        number = int(m.group(2))
+        try:
+            pr = fetch(m.group(1), number)
+        except Exception as e:  # noqa: BLE001 - the edition must still go out
+            log.warning("could not ask GitHub about %s PR #%s: %s", r["id"], number, e)
+            continue
+        if not pr.get("merged_at"):
+            continue
+        day = str(pr["merged_at"])[:10]
+        build = load_build(path)
+        build["fm"]["build_merged"] = day
+        _append_history(build, f"### merged — {day} · PR #{number} on GitHub")
+        _save_build(build, f"build {r['id']}: PR #{number} merged")
+        con.execute("UPDATE actions SET done=1 WHERE id=?", (r["action_id"],))
+        con.commit()
+        db.add_build_event(con, r["id"], f"{r['id']} ({r['title']}): PR #{number} "
+                           f"merged on {day} — “{r['text']}” is closed for you.")
+        merged += 1
+    if merged:
+        log.info("%d Build PR(s) merged since the last edition", merged)
+    return merged
 
 
 def _sweep_stale_executing(con) -> None:

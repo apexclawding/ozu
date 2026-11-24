@@ -63,7 +63,8 @@ stop meaning anything.
    `@approved` (optionally `@opus`, `@sonnet` or `@fable`) runs it once, in a
    fresh clone, on branch `build/<id>`, and opens a PR. `@drop` closes it.
 4. The result arrives in the next edition with the agent's report and a
-   printed `☐ Review PR #12` line. Tick it when you have.
+   printed `☐ Review PR #12` line. Tick it when you have; if you merge the PR
+   on GitHub instead, the next edition says so and closes that box for you.
 
 What executes is always text you read. The agent's tools are scoped per run
 (file access pinned to its own clone, an explicit Bash allowlist, `git push`

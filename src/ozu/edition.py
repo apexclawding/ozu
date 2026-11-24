@@ -358,6 +358,11 @@ def send(kind: str, today: dt.date | None = None, *, force: bool = False) -> boo
             (kind, today.isoformat())).fetchone():
         log.info("the %s edition already went out on %s", kind, today)
         return False
+    from . import builds
+    try:            # a Build PR merged since the last edition: a line, a box closed
+        builds.sweep_merged(con)
+    except Exception as e:  # noqa: BLE001 - never what stops an edition
+        log.warning("merged-PR sweep failed: %s", e)
     data = gather(con, kind, today)
     if data is None:
         log.info("nothing for a %s edition on %s; none sent", kind, today)
