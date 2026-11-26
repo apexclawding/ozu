@@ -44,9 +44,18 @@ def gather(days: int = 7) -> dict:
         "SELECT id, title, topic, summary FROM notes"
         " WHERE vault='personal' AND created >= ? ORDER BY created", (since,)
     ).fetchall()
+    # A low-confidence note is shown for checking the week it arrives, and
+    # then only counted. Nothing on paper clears `needs_review` (a note stays
+    # `status: draft` until it is edited by hand), so listing every flagged
+    # note printed the same page images in every weekly digest, for good.
     review = con.execute(
         "SELECT id, title, path FROM notes WHERE vault='personal' AND needs_review=1"
+        " AND created >= ? ORDER BY created", (since,)
     ).fetchall()
+    review_older = con.execute(
+        "SELECT COUNT(*) FROM notes WHERE vault='personal' AND needs_review=1"
+        " AND created < ?", (since,)
+    ).fetchone()[0]
     built = con.execute(
         "SELECT title, summary FROM notes WHERE vault='personal' AND created >= ?"
         " AND (','||tags||',') LIKE '%,claude-work,%'", (since,)
@@ -83,7 +92,7 @@ def gather(days: int = 7) -> dict:
 
     return {
         "date": dt.date.today().isoformat(),
-        "new": new, "review": review, "built": built,
+        "new": new, "review": review, "review_older": review_older, "built": built,
         "r_built": research_built, "r_queued": research_queued,
         "r_failed": research_failed,
         "learned": learned, "coming_back": coming_back, "l_failed": learn_failed,
@@ -92,6 +101,12 @@ def gather(days: int = 7) -> dict:
         "gem": _forgotten_gem(con, new),
         "repos": cfg.claude_repos,
     }
+
+
+def _older_line(n: int) -> str:
+    """The one line older flagged notes get: they were shown the week they came in."""
+    return (f"{n} older note{'' if n == 1 else 's'} still marked draft in the vault"
+            " (each was shown here the week it came in).")
 
 
 def build_digest(days: int = 7, data: dict | None = None) -> str:
@@ -146,6 +161,8 @@ def build_digest(days: int = 7, data: dict | None = None) -> str:
                      + " — see journalctl --user -u ozu-nightly")
     if review:
         lines.append(f"\n*Needs review ({len(review)}):* " + ", ".join(r["title"] for r in review[:5]))
+    if data.get("review_older"):
+        lines.append(f"\n{_older_line(data['review_older'])}")
     if gem:
         lines.append(f"\n💎 *Forgotten gem:* {gem['title']} — {gem['summary']} (from {gem['created']})")
     if not new and not actions:

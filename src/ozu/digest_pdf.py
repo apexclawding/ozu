@@ -33,6 +33,7 @@ import logging
 from pathlib import Path
 
 from .config import brand, canonical_topic, get_config
+from .digest import _older_line
 from .indexer import _parse_frontmatter
 from .layout import AUTHORS, Document
 
@@ -470,6 +471,7 @@ def _digest_body(doc: Document, data: dict) -> None:
                 doc.image(cfg.vault_dir / str(fm["image"]))
             if body:
                 _page_text(doc, body)
+    _older_review(doc, data)
 
     if data["gem"]:
         g = data["gem"]
@@ -478,6 +480,16 @@ def _digest_body(doc: Document, data: dict) -> None:
 
     if not data["new"] and not data["actions"]:
         doc.zero("Quiet week · the Scribe misses you.")
+
+
+def _older_review(doc: Document, data: dict) -> None:
+    """Flagged notes from before this digest's window: a count, never their
+    page images again (they were shown the week they came in)."""
+    if not data.get("review_older"):
+        return
+    if not data["review"]:
+        doc.heading("Needs review")
+    doc.para(_older_line(data["review_older"]), cls="faint")
 
 
 def _digest_line(data: dict) -> str:
