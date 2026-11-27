@@ -146,3 +146,14 @@ def test_a_morning_goes_out_for_the_brief_alone_and_the_evening_asks_about_it(en
     edition.record(con, f"Ozu Morning {TODAY}", "morning", sent_on=TODAY.isoformat())
     evening = edition.gather(con, "evening", TODAY)
     assert evening["ask_morning"] and evening["brief"] is None
+
+
+def test_the_delete_list_command_prints_and_init_still_runs(env, monkeypatch, capsys):
+    """`ozu edition delete-list` prints the list; adding it once shadowed the
+    module's `db` inside the CLI and broke `ozu init` (caught by ruff F823)."""
+    from ozu import pipeline
+    monkeypatch.setattr(sys, "argv", ["ozu", "init"])
+    pipeline.main()
+    monkeypatch.setattr(sys, "argv", ["ozu", "edition", "delete-list"])
+    pipeline.main()
+    assert "Nothing on the Scribe is finished with." in capsys.readouterr().out

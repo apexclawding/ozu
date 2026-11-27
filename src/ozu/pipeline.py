@@ -233,7 +233,6 @@ def main() -> None:
         from . import edition
         args = [a for a in sys.argv[2:] if a != "--force"]
         if cmd == "edition" and args[:1] == ["delete-list"]:
-            from . import db
             con = db.connect(get_config().db_path)
             edition.ensure_ledgers(con)
             print(edition.delete_list(con, _dt.date.today()))
