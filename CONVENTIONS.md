@@ -48,8 +48,11 @@ written on the cover routes home like one written on page 3.
 Every document the pipeline sends you is named "Ozu …": the two daily
 **editions** (Ozu Morning at 07:00, Ozu Evening at 20:00, each several
 sections: what your ink became, Build results, the Learn sheet, the weekly
-digest and the wiki sheet on Sundays, and a *Safe to delete* list), plus Build proposals and research briefs as
-documents of their own. Write on any of them and re-export to Drive; the annotation
+digest and the wiki sheet on Sundays), plus Build proposals and research briefs as
+documents of their own. The Morning opens on the **morning brief**: a line
+for today's one thing, the open actions that are due (a date written in an
+action's own words, "By Nov 19th: …", is read as its deadline), the next few
+actions, one long-open action, and the Builds waiting on you. Write on any of them and re-export to Drive; the annotation
 pass reads the ink and leaves the printed text alone — your own output
 never rounds a trip back into the vault.
 
@@ -71,11 +74,10 @@ never rounds a trip back into the vault.
   edition** (they print the Build id in the running header), `@input`,
   `@approved` (+ `@opus` / `@sonnet` / `@fable`) and `@drop` drive the
   build conversation — see "Answering a Build" below.
-- **The last section of every edition, "Safe to delete from the Scribe"**,
-  is not something to annotate: it names the documents on the device that
-  are finished with (a superseded revision, a done Build's proposal, an
-  earlier edition, a brief older than thirty days). Delete them from the
-  device when you like — export any page you have written on first.
+- **On the morning brief**, the action lines are the real actions: tick one
+  and it closes, as anywhere. What you write on the "Today's one thing" line
+  becomes a note. A Build listed there is only named — `@approved`, `@input`
+  and `@drop` work on its own proposal, not beside its line on the brief.
 - **On the Sunday "Wiki this week" sheet** (inside the evening edition),
   every concept page prints its id (`page: wiki-…`). Write beside a claim
   to correct it; **draw a line through a claim to drop it** — the one place

@@ -15,6 +15,7 @@ size goes beyond the ordinary one, the ordinary size is kept alongside.
 """
 from __future__ import annotations
 
+import datetime as dt
 import json
 from pathlib import Path
 
@@ -271,12 +272,26 @@ CASES["edition"] = {
         },
         "results": [CASES["build-result"]["payload"]],
         "learn": None, "digest": None,
-        "dead": {"recent": [
-            {"name": "Ozu Build r1 - Weekly Sunday “week ahead” note (B-260906-7f3a)",
-             "kind": "build", "reason": "superseded by r2", "dead_on": None},
-            {"name": "Ozu Mail 2026-09-07 1634", "kind": "mail",
-             "reason": "an old Ozu Mail — everything on it is in the vault",
-             "dead_on": None}], "older": 12, "new_names": []},
+        # The morning brief (brief.py): a date read from the text, overdue;
+        # the next actions; the longest-open one; a Build waiting; a note.
+        "brief": {
+            "today": dt.date(2026, 9, 11),
+            "due": [{"id": 1, "text": "By Sep 8th: send the façade quote to Zoë",
+                     "topic": "home", "written": dt.date(2026, 8, 30),
+                     "age": 12, "due": dt.date(2026, 9, 8)}],
+            "next": [{"id": 2, "text": ACTION_REAL, "topic": "ideas",
+                      "written": dt.date(2026, 9, 10), "age": 1, "due": None},
+                     {"id": 3, "text": ACTION_120, "topic": "home",
+                      "written": dt.date(2026, 9, 6), "age": 5, "due": None}],
+            "longest": {"id": 4, "text": "Sand the balcony wood", "topic": "home",
+                        "written": dt.date(2026, 7, 24), "age": 49, "due": None},
+            "more": 14, "oldest": dt.date(2026, 7, 2),
+            "waiting": [{"id": "B-260909-1c2d", "title": "Price watcher for the €2 stamps",
+                         "what": "r1 waiting for @approved on its proposal"}],
+            "lately": [{"title": "Should the shed face south?",
+                        "summary": "Morning sun ② vs. shade ③ — decide before the order.",
+                        "created": "2026-09-09"}],
+        },
     },
 }
 

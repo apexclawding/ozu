@@ -296,16 +296,14 @@ def test_sections_start_on_fresh_pages_with_no_blank_sheet_and_an_outline(tmp_pa
     level1 = [(t, page) for level, t, page in toc if level == 1]
     assert [t for t, _ in level1] == [
         "Ozu Morning", "What your ink became",
-        "Build result · Weekly Sunday “week ahead” note",
-        "Safe to delete from the Scribe"]
+        "Build result · Weekly Sunday “week ahead” note"]
     starts = [page for _, page in level1]
     assert starts == sorted(starts) and len(set(starts)) == len(starts), (
         "every section starts on its own page")
     # the section's band is the first thing on its page: only the running
     # header and the band's kicker can come before its title
     for (_, page), band_title in zip(level1[1:], (
-            "What your ink became", "Weekly Sunday",
-            "Safe to delete")):
+            "What your ink became", "Weekly Sunday")):
         assert band_title in pages[page - 1][:160], (band_title, pages[page - 1][:160])
     assert any(level == 2 and t == "Your checkmarks" for level, t, _ in toc)
 
@@ -317,10 +315,15 @@ def test_sections_start_on_fresh_pages_with_no_blank_sheet_and_an_outline(tmp_pa
     assert mail_page not in with_header
     assert "☐ Review PR #12" in "\n".join(pages[i] for i in with_header)
 
-    # the delete list names the documents and counts the rest
+    # the Morning opens on the brief, not a contents page; the delete list is
+    # no longer printed (`ozu edition delete-list` has it)
+    first = "\n".join(pages[1:level1[1][1] - 1])   # everything before the first section
+    assert first.index("Today's one thing") < first.index("Also in this edition")
+    assert "☐ By Sep 8th: send the façade quote to Zoë" in " ".join(first.split())
+    assert "3 days late" in first and "+ 14 more open, the oldest from 2 Jul" in first
+    assert "longest open" in first and "B-260909-1c2d" in first
     tail = "\n".join(pages)
-    assert "Ozu Mail 2026-09-07 1634" in tail and "superseded by r2" in tail
-    assert "12 older ones" in tail
+    assert "Safe to delete" not in tail and "Ozu Mail 2026-09-07 1634" not in tail
 
     # the CSS trap this design exists to avoid (module docstring, D-07)
     assert "page-break-before" not in layout.CSS
