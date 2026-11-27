@@ -16,6 +16,7 @@ Commands:
   edition  morning | evening | extra [YYYY-MM-DD] [--force] — build and send
            one edition now (the timers run morning 07:00, evening 20:00;
            one of each per day unless --force). `mail` = `edition extra`.
+           `edition delete-list` prints what is finished with on the device.
   tick     pull → ingest → process → builds (the 5-minute paper loop)
   builds   list Builds; `builds run` the builds phase now;
            `builds simulate --note <id>` a proposal PDF without a vision call;
@@ -231,6 +232,12 @@ def main() -> None:
         import datetime as _dt
         from . import edition
         args = [a for a in sys.argv[2:] if a != "--force"]
+        if cmd == "edition" and args[:1] == ["delete-list"]:
+            from . import db
+            con = db.connect(get_config().db_path)
+            edition.ensure_ledgers(con)
+            print(edition.delete_list(con, _dt.date.today()))
+            return
         if cmd == "mail":
             kind, rest = "extra", args
         else:

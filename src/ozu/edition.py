@@ -8,11 +8,13 @@ once and never annotated, in a library that has no folders a sender can
 target and no bulk delete on the device. The fix is on this side: fewer,
 better-shaped documents, and a pipeline that says which ones are dead.
 
-**Morning** (07:00) carries what the ink became since last evening, any
-Build result that landed, the research briefs that arrived overnight (named;
-they travel as their own documents), and the delete list. **Evening**
-(20:00) carries the day's ink, results, the Learn sheet, the weekly digest
-and the wiki sheet on Sundays, and the delete list. **Extra** is the same shape on demand (`ozu edition extra`)
+**Morning** (07:00) opens on the morning brief (`brief.py`: what is due,
+the next few actions, what waits on a decision), then carries what the ink
+became since last evening, any Build result that landed and the research
+briefs that arrived overnight (named; they travel as their own documents).
+**Evening** (20:00) carries the day's ink, results, the Learn sheet, the
+weekly digest and the wiki sheet on Sundays, and asks which line of that
+morning's brief was used. **Extra** is the same shape on demand (`ozu edition extra`)
 for a day one cannot wait. Build *proposals* keep their five-minute latency
 and their own documents: that latency is the feature of the paper loop.
 
@@ -23,7 +25,9 @@ ledgers are the ones that already existed (`mailed`, `learn_sheet`, `receipts`,
 `build_events`), so an edition consumes exactly what an event-document would
 have, plus one new one: `delivered`, every document that reached the device
 by the name the library shows. That table is what the delete list is
-computed from, by rules a reader can check against the page:
+computed from (`ozu edition delete-list`). It is no longer printed: readers
+kept their documents, and a page about the device in every edition was paper
+spent on something nobody did. The rules:
 
   - a Build revision is dead once a later revision exists, or once the Build
     is done or dropped (an `error` Build is kept — its page re-arms it);
@@ -211,6 +215,14 @@ def gather_dead(con, today: dt.date) -> dict:
             "new_names": [d["name"] for d in dead if not d["dead_on"]]}
 
 
+def delete_list(con, today: dt.date) -> str:
+    """The delete list as text, for `ozu edition delete-list`."""
+    dead = sorted(dead_documents(con, today), key=lambda d: (d["kind"], d["name"]))
+    if not dead:
+        return "Nothing on the Scribe is finished with."
+    return "\n".join(f"{d['name']}\n    {d['reason']}" for d in dead)
+
+
 def mark_dead(con, names: list[str], today: dt.date) -> None:
     con.executemany("UPDATE delivered SET dead_on=? WHERE name=? AND dead_on IS NULL",
                     [(today.isoformat(), n) for n in names])
@@ -324,8 +336,15 @@ def gather(con, kind: str, today: dt.date) -> dict | None:
             digest.run(data["digest"])                 # the Markdown copy
             from . import wiki                         # …and the wiki sheet
             data["wiki"] = wiki.gather_sheet(con, today)
+    data["brief"] = None
+    if kind == "morning":
+        from . import brief
+        data["brief"] = brief.gather(con, today)
+    data["ask_morning"] = kind == "evening" and bool(con.execute(
+        "SELECT 1 FROM delivered WHERE kind='morning' AND sent_on=?",
+        (today.isoformat(),)).fetchone())
     data["trouble"] = gather_trouble(con, today)
-    if not any((data["mail"], data["results"], data["learn"],
+    if not any((data["brief"], data["mail"], data["results"], data["learn"],
                 data["digest"], data["wiki"], data["trouble"])):
         return None
     data["dead"] = gather_dead(con, today)

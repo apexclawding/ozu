@@ -84,8 +84,14 @@ def source_text(case) -> str:
             parts.append(source_text({"kind": "build-result", "payload": r}))
         if p.get("mail"):
             parts.append(source_text({"kind": "mail", "payload": p["mail"]}))
-        for d in (p.get("dead") or {}).get("recent") or []:
-            parts += [d["name"], d.get("reason", "")]
+        b = p.get("brief") or {}
+        for a in [*(b.get("due") or []), *(b.get("next") or []),
+                  *([b["longest"]] if b.get("longest") else [])]:
+            parts.append(a["text"])
+        for w in b.get("waiting") or []:
+            parts += [w["title"], w["what"]]
+        for n in b.get("lately") or []:
+            parts += [n["title"], n["summary"]]
         return "\n".join(b for b in parts if b)
     if case["kind"] == "learn":
         for item in p.get("new") or []:

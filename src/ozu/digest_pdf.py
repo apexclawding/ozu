@@ -35,6 +35,7 @@ from pathlib import Path
 from .config import brand, canonical_topic, get_config
 from .digest import _older_line
 from .indexer import _parse_frontmatter
+from . import brief
 from .layout import AUTHORS, Document
 
 log = logging.getLogger("ozu.digest_pdf")
@@ -524,21 +525,13 @@ def build_pdf(data: dict, out_path: Path) -> Path:
 
 EDITION_WORDMARK = {"morning": "MORNING", "evening": "EVENING", "extra": "EXTRA"}
 EDITION_SUBTITLE = {
-    "morning": "what your ink became overnight",
+    "morning": "your day · what your ink became overnight",
     "evening": "what your ink became · what the videos taught",
     "extra": "what your ink became, out of cycle",
 }
 
-# The delete list is the one section that is about the device rather than the
-# vault. Its wording is the whole feature: a name the reader can find in the
-# library, and the reason it is dead, in five words.
-DELETE_INTRO = ("These documents on the Scribe are finished with — every one "
-                "is in the vault, a superseded revision, or an edition whose "
-                "ink has been read. Delete them from the device when you "
-                "like; export any page you have written on first.")
-DELETE_OLDER = ("and {n} older one{s} listed before — the monthly sweep on "
-                "Manage Your Content and Devices catches those.")
-DELETE_LIST_MAX = 60
+MORNING_QUESTION = ("Which line of this morning's brief did you use today? "
+                    "Write it below — or \"none\".")
 
 
 def _edition_sections(data: dict) -> list[dict]:
@@ -569,14 +562,15 @@ def _edition_sections(data: dict) -> list[dict]:
         out.append({"title": "Pages I could not read", "kind": "trouble",
                     "header": "", "data": trouble,
                     "line": f"{n} page{'' if n == 1 else 's'} waiting"})
-    dead = data.get("dead") or {}
-    if dead.get("recent") or dead.get("older"):
-        n = len(dead.get("recent") or [])
-        out.append({"title": "Safe to delete from the Scribe", "kind": "dead",
-                    "header": "", "data": dead,
-                    "line": (f"{n} document{'' if n == 1 else 's'}"
-                             if n else "nothing new")})
     return out
+
+
+def _cover_line(data: dict, sections: list[dict]) -> str:
+    """The brief's counts first on a Morning, then the sections'."""
+    if not data.get("brief"):
+        return _edition_line(sections)
+    bits = [brief.line(data["brief"]), _edition_line(sections) if sections else ""]
+    return " · ".join(b for b in bits if b) or "your day"
 
 
 def _edition_line(sections: list[dict]) -> str:
@@ -595,9 +589,6 @@ def _edition_line(sections: list[dict]) -> str:
             bits.append("wiki sheet")
         elif s["kind"] == "trouble":
             bits.append(f"{s['data']['total']} page(s) unread")
-        elif s["kind"] == "dead":
-            n = len(s["data"].get("recent") or [])
-            bits.append(f"{n} to delete" if n else "")
     if results:
         bits.insert(1 if sections and sections[0]["kind"] == "mail" else 0,
                     f"{results} build result{'' if results == 1 else 's'}")
@@ -625,24 +616,9 @@ def _trouble_body(doc: Document, trouble: dict) -> None:
                  f"not named here", cls="faint")
 
 
-def _dead_body(doc: Document, dead: dict) -> None:
-    doc.para(DELETE_INTRO, cls="summary")
-    recent = dead.get("recent") or []
-    for row in recent[:DELETE_LIST_MAX]:
-        doc.para(f"•  {row['name']}", cls="bullet")
-        if row.get("reason"):
-            doc.para(row["reason"], cls="faint")
-    if len(recent) > DELETE_LIST_MAX:
-        doc.para(f"+ {len(recent) - DELETE_LIST_MAX} more", cls="faint")
-    if dead.get("older"):
-        n = dead["older"]
-        doc.para(DELETE_OLDER.format(n=n, s="" if n == 1 else "s"),
-                 cls="faint")
-
-
 _BODY = {
     "mail": _mail_body, "result": _result_body, "digest": _digest_body,
-    "learn": _learn_body, "dead": _dead_body, "trouble": _trouble_body,
+    "learn": _learn_body, "trouble": _trouble_body,
     "wiki": _wiki_body,
 }
 _FOOTER = {"learn": LEARN_INVITE, "wiki": WIKI_INVITE}
@@ -664,16 +640,29 @@ def build_edition_pdf(data: dict, out_path: Path) -> Path:
               date=data["date"], kicker=brand(),
               wordmark=EDITION_WORDMARK[kind],
               subtitle=EDITION_SUBTITLE[kind],
-              line=_edition_line(sections))
+              line=_cover_line(data, sections))
     doc.head(f"{brand()} {kind}", f"{brand()} {kind.capitalize()}",
              f"{data['weekday']} · {data['stamp']}")
-    doc.heading("In this edition")
-    for s in sections:
-        doc.para(f"•  {s['title']}", cls="bullet")
-        if s.get("line"):
-            doc.para(s["line"], cls="faint")
-    if not sections:
-        doc.zero("Nothing since the last edition.")
+    if data.get("brief"):
+        # The Morning opens on the day, not on a table of contents; the rest
+        # of the edition is one line, so the brief keeps its page.
+        brief.body(doc, data["brief"])
+        if sections:
+            doc.para("Also in this edition: " + " · ".join(s["title"] for s in sections),
+                     cls="faint")
+    else:
+        doc.heading("In this edition")
+        for s in sections:
+            doc.para(f"•  {s['title']}", cls="bullet")
+            if s.get("line"):
+                doc.para(s["line"], cls="faint")
+        if not sections:
+            doc.zero("Nothing since the last edition.")
+    if data.get("ask_morning"):
+        # Two weeks of this, then any section never named here is cut.
+        doc.heading("This morning's brief")
+        doc.para(MORNING_QUESTION, cls="summary")
+        doc.rules(1)
 
     for s in sections:
         doc.section(page_header=s["header"])
